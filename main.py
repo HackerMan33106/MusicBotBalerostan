@@ -26,7 +26,7 @@ SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
 COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
-MAX_DURATION = int(os.getenv("MAX_DURATION", "600"))  # В секундах (по умолчанию 10 минут)
+MAX_DURATION = int(os.getenv("MAX_DURATION", "900"))  # В секундах (по умолчанию 15 минут)
 INACTIVITY_TIMEOUT = int(os.getenv("INACTIVITY_TIMEOUT", "10"))  # Секунд до выхода при пустом ГС
 EMPTY_QUEUE_TIMEOUT = int(os.getenv("EMPTY_QUEUE_TIMEOUT", "20"))  # Секунд до выхода при пустой очереди
 
