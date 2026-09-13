@@ -646,61 +646,101 @@ class BlacklistDB:
                 cursor = conn.cursor()
                 cursor.execute("SELECT guild_id, user_id FROM blacklist")
                 for guild_id, user_id in cursor.fetchall():
-                    if guild_id not in self._cache:
-                        self._cache[guild_id] = set()
-                    self._cache[guild_id].add(user_id)
+                    try:
+                        gid = int(guild_id)
+                        uid = int(user_id)
+                        if gid not in self._cache:
+                            self._cache[gid] = set()
+                        self._cache[gid].add(uid)
+                    except (ValueError, TypeError):
+                        continue
         except Exception as e:
             print(f"Ошибка загрузки кэша blacklist: {e}")
 
-    def is_blacklisted(self, guild_id: int | None, user_id: int | None) -> bool:
+    def is_blacklisted(self, guild_id: int | str | None, user_id: int | str | None) -> bool:
         if not guild_id or not user_id:
             return False
-        return user_id in self._cache.get(guild_id, set())
+        try:
+            gid = int(guild_id)
+            uid = int(user_id)
+        except (ValueError, TypeError):
+            return False
 
-    def add(self, guild_id: int, user_id: int, added_by: int | None = None) -> bool:
-        if self.is_blacklisted(guild_id, user_id):
+        if uid in self._cache.get(gid, set()):
+            return True
+
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1 FROM blacklist WHERE guild_id = ? AND user_id = ?", (gid, uid))
+                if cursor.fetchone():
+                    if gid not in self._cache:
+                        self._cache[gid] = set()
+                    self._cache[gid].add(uid)
+                    return True
+        except Exception:
+            pass
+
+        return False
+
+    def add(self, guild_id: int | str, user_id: int | str, added_by: int | str | None = None) -> bool:
+        try:
+            gid = int(guild_id)
+            uid = int(user_id)
+            aby = int(added_by) if added_by else None
+        except (ValueError, TypeError):
+            return False
+
+        if self.is_blacklisted(gid, uid):
             return False
         try:
             with self._get_conn() as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO blacklist (guild_id, user_id, added_by) VALUES (?, ?, ?)",
-                    (guild_id, user_id, added_by)
+                    (gid, uid, aby)
                 )
                 conn.commit()
         except Exception as e:
             print(f"Ошибка добавления в blacklist: {e}")
             return False
 
-        if guild_id not in self._cache:
-            self._cache[guild_id] = set()
-        self._cache[guild_id].add(user_id)
+        if gid not in self._cache:
+            self._cache[gid] = set()
+        self._cache[gid].add(uid)
         return True
 
-    def remove(self, guild_id: int, user_id: int) -> bool:
-        if not self.is_blacklisted(guild_id, user_id):
+    def remove(self, guild_id: int | str, user_id: int | str) -> bool:
+        try:
+            gid = int(guild_id)
+            uid = int(user_id)
+        except (ValueError, TypeError):
+            return False
+
+        if not self.is_blacklisted(gid, uid):
             return False
         try:
             with self._get_conn() as conn:
                 conn.execute(
                     "DELETE FROM blacklist WHERE guild_id = ? AND user_id = ?",
-                    (guild_id, user_id)
+                    (gid, uid)
                 )
                 conn.commit()
         except Exception as e:
             print(f"Ошибка удаления из blacklist: {e}")
             return False
 
-        if guild_id in self._cache:
-            self._cache[guild_id].discard(user_id)
+        if gid in self._cache:
+            self._cache[gid].discard(uid)
         return True
 
-    def get_blacklisted_details(self, guild_id: int) -> list[dict]:
+    def get_blacklisted_details(self, guild_id: int | str) -> list[dict]:
         try:
+            gid = int(guild_id)
             with self._get_conn() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT user_id, added_by, added_at FROM blacklist WHERE guild_id = ? ORDER BY added_at ASC",
-                    (guild_id,)
+                    (gid,)
                 )
                 rows = cursor.fetchall()
                 return [{'user_id': r[0], 'added_by': r[1], 'added_at': r[2]} for r in rows]
@@ -1077,10 +1117,17 @@ class PlayerControlView(discord.ui.LayoutView):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         cross_emoji = EMOJIS.get('cross', '')
+
+        # 1. Проверка чёрного списка
+        if db_blacklist.is_blacklisted(interaction.guild_id, interaction.user.id):
+            view = ErrorMessageView(t(interaction, "user_blacklisted_interaction", cross=cross_emoji))
+            await interaction.response.send_message(view=view, ephemeral=True)
+            return False
+
         vc = self.player.voice_client or (interaction.guild.voice_client if interaction.guild else None)
         user_voice = interaction.user.voice if isinstance(interaction.user, discord.Member) else None
 
-        # 1. Проверка нахождения в том же голосовом канале с ботом
+        # 2. Проверка нахождения в том же голосовом канале с ботом
         if not vc or not vc.channel:
             view = ErrorMessageView(t(interaction, "not_in_voice", cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
@@ -1088,12 +1135,6 @@ class PlayerControlView(discord.ui.LayoutView):
 
         if not user_voice or not user_voice.channel or user_voice.channel.id != vc.channel.id:
             view = ErrorMessageView(t(interaction, "same_voice_channel", channel=vc.channel.name, cross=cross_emoji))
-            await interaction.response.send_message(view=view, ephemeral=True)
-            return False
-
-        # 2. Проверка чёрного списка (только если пользователь уже находится в нужном ГС)
-        if db_blacklist.is_blacklisted(interaction.guild_id, interaction.user.id):
-            view = ErrorMessageView(t(interaction, "user_blacklisted_interaction", cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return False
 
@@ -1572,6 +1613,10 @@ async def find_best_youtube_stream(query: str, target_artist: str = '', target_t
 async def play_track_logic(requester: discord.Member, guild: discord.Guild, text_channel, link: str, send_error, send_queued):
     cross_emoji = EMOJIS['cross']
 
+    if db_blacklist.is_blacklisted(guild.id, requester.id):
+        await send_error(ErrorMessageView(t(guild, "user_blacklisted_interaction", cross=cross_emoji)))
+        return
+
     user_channel = requester.voice.channel
     player = get_player(guild)
     player.text_channel = text_channel
@@ -1771,6 +1816,11 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
 async def play_command(interaction: discord.Interaction, link: str):
     cross_emoji = EMOJIS['cross']
 
+    if db_blacklist.is_blacklisted(interaction.guild_id, interaction.user.id):
+        view = ErrorMessageView(t(interaction, "user_blacklisted_interaction", cross=cross_emoji))
+        await interaction.response.send_message(view=view, ephemeral=True)
+        return
+
     if not interaction.user.voice or not interaction.user.voice.channel:
         view = ErrorMessageView(t(interaction, "join_voice_channel", cross=cross_emoji))
         await interaction.response.send_message(view=view, ephemeral=True)
@@ -1789,6 +1839,12 @@ async def play_command(interaction: discord.Interaction, link: str):
 @bot.command(name="play")
 async def play_text_command(ctx: commands.Context, *, link: str = ""):
     cross_emoji = EMOJIS['cross']
+
+    if ctx.guild and db_blacklist.is_blacklisted(ctx.guild.id, ctx.author.id):
+        view = ErrorMessageView(t(ctx, "user_blacklisted_interaction", cross=cross_emoji))
+        await ctx.send(view=view)
+        return
+
     clean_link = link.strip()
     if clean_link.lower().startswith("link:"):
         clean_link = clean_link[5:].strip()
@@ -2087,8 +2143,10 @@ class SearchView(discord.ui.LayoutView):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if db_blacklist.is_blacklisted(interaction.guild_id, interaction.user.id):
+            cross_emoji = EMOJIS.get('cross', '')
+            view = ErrorMessageView(t(interaction, "user_blacklisted_interaction", cross=cross_emoji))
             try:
-                await interaction.response.defer()
+                await interaction.response.send_message(view=view, ephemeral=True)
             except Exception:
                 pass
             return False
@@ -2267,6 +2325,11 @@ class SearchView(discord.ui.LayoutView):
 ])
 async def search_command(interaction: discord.Interaction, input: str, source: str = "youtube"):
     cross_emoji = EMOJIS.get('cross', '')
+    if db_blacklist.is_blacklisted(interaction.guild_id, interaction.user.id):
+        view = ErrorMessageView(t(interaction, "user_blacklisted_interaction", cross=cross_emoji))
+        await interaction.response.send_message(view=view, ephemeral=True)
+        return
+
     if not interaction.user.voice or not interaction.user.voice.channel:
         view = ErrorMessageView(t(interaction, "join_voice_channel", cross=cross_emoji))
         await interaction.response.send_message(view=view, ephemeral=True)
@@ -2287,6 +2350,11 @@ async def search_command(interaction: discord.Interaction, input: str, source: s
 @bot.command(name="search")
 async def search_text_command(ctx: commands.Context, *, args: str = ""):
     cross_emoji = EMOJIS.get('cross', '')
+    if ctx.guild and db_blacklist.is_blacklisted(ctx.guild.id, ctx.author.id):
+        view = ErrorMessageView(t(ctx, "user_blacklisted_interaction", cross=cross_emoji))
+        await ctx.send(view=view)
+        return
+
     if not ctx.author.voice or not ctx.author.voice.channel:
         view = ErrorMessageView(t(ctx, "join_voice_channel", cross=cross_emoji))
         await ctx.send(view=view)
@@ -2324,19 +2392,34 @@ async def search_text_command(ctx: commands.Context, *, args: str = ""):
     msg = await ctx.send(view=view, allowed_mentions=discord.AllowedMentions.none())
     view.message = msg
 
-@bot.tree.interaction_check
 async def global_tree_interaction_check(interaction: discord.Interaction) -> bool:
     if not interaction.guild_id:
         return True
 
+    # Получаем имя вызываемой команды (через interaction.command либо напрямую из данных data)
+    cmd_name = interaction.command.name if interaction.command else None
+    if not cmd_name and interaction.data and isinstance(interaction.data, dict):
+        cmd_name = interaction.data.get('name')
+
     # Команды /bl, /ping и /config доступны для проверки
-    if interaction.command and interaction.command.name in ("bl", "ping", "config"):
+    if cmd_name in ("bl", "ping", "config"):
         return True
 
     if db_blacklist.is_blacklisted(interaction.guild_id, interaction.user.id):
+        cross_emoji = EMOJIS.get('cross', '')
+        view = ErrorMessageView(t(interaction, "user_blacklisted_interaction", cross=cross_emoji))
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(view=view, ephemeral=True)
+            else:
+                await interaction.followup.send(view=view, ephemeral=True)
+        except Exception:
+            pass
         return False
 
     return True
+
+bot.tree.interaction_check = global_tree_interaction_check
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
