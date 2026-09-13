@@ -28,6 +28,8 @@ ENV/
 
 # Logs & Cache
 *.log
+.cache
+.cache*
 .cache/
 
 # OS
