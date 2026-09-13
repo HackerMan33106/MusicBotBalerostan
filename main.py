@@ -827,8 +827,8 @@ TRANSLATIONS = {
         'bl_added_by': ' • Добавил: <@{added_by}>',
         'bl_user_added': '### {tick} Пользователь {user} успешно добавлен в чёрный список.',
         'bl_user_removed': '### {tick} Пользователь {user} успешно удален из чёрного списка.',
-        'ping_measuring': '### 🏓 Понг...',
-        'ping_response': '### 🏓 Понг! {delay}мс {emoji}\nGateway: `{ws_delay}мс` • API: `{delay}мс`\n-# {status}',
+        'ping_measuring': '### Понг...',
+        'ping_response': '### Понг! {delay}мс {emoji}\nGateway: `{ws_delay}мс` • API: `{delay}мс`\n-# {status}',
         'ping_status_normal': 'Бот работает нормально.',
         'ping_status_almost': 'Бот работает почти нормально.',
         'config_title': '### ⚙️ Настройки бота\n• **Текущий язык:** Русский 🇷🇺 (`ru`)\n-# Чтобы изменить язык, используйте: `/config language: english` или `/config language: russian`',
@@ -888,8 +888,8 @@ TRANSLATIONS = {
         'bl_added_by': ' • Added by: <@{added_by}>',
         'bl_user_added': '### {tick} User {user} was successfully added to the blacklist.',
         'bl_user_removed': '### {tick} User {user} was successfully removed from the blacklist.',
-        'ping_measuring': '### 🏓 Pong...',
-        'ping_response': '### 🏓 Pong! {delay}ms {emoji}\nGateway: `{ws_delay}ms` • API: `{delay}ms`\n-# {status}',
+        'ping_measuring': '### Pong...',
+        'ping_response': '### Pong! {delay}ms {emoji}\nGateway: `{ws_delay}ms` • API: `{delay}ms`\n-# {status}',
         'ping_status_normal': 'Bot is working normally.',
         'ping_status_almost': 'Bot is working almost normally.',
         'config_title': '### ⚙️ Bot Settings\n• **Current language:** English 🇬🇧 (`en`)\n-# To change the language, use: `/config language: english` or `/config language: russian`',
@@ -2568,6 +2568,7 @@ async def ping_prefix_command(ctx: commands.Context):
     await msg.edit(view=StatusMessageView(text))
 
 @bot.tree.command(name="config", description="Настройки бота / Bot settings")
+@app_commands.default_permissions(manage_guild=True)
 @app_commands.describe(language="Выберите язык бота (english / russian)")
 @app_commands.choices(language=[
     app_commands.Choice(name="English (eng) 🇬🇧", value="en"),
@@ -2581,13 +2582,13 @@ async def config_slash_command(interaction: discord.Interaction, language: str |
     cross_emoji = EMOJIS.get('cross', '')
     tick_emoji = EMOJIS.get('tick', '')
 
-    if language is None:
-        view = StatusMessageView(t(interaction, "config_title"))
+    if not is_admin_or_manager(interaction.user):
+        view = ErrorMessageView(t(interaction, "config_no_perms", cross=cross_emoji))
         await interaction.response.send_message(view=view, ephemeral=True)
         return
 
-    if not is_admin_or_manager(interaction.user):
-        view = ErrorMessageView(t(interaction, "config_no_perms", cross=cross_emoji))
+    if language is None:
+        view = StatusMessageView(t(interaction, "config_title"))
         await interaction.response.send_message(view=view, ephemeral=True)
         return
 
@@ -2613,6 +2614,9 @@ async def config_prefix_command(ctx: commands.Context, key: str | None = None, v
     cross_emoji = EMOJIS.get('cross', '')
     tick_emoji = EMOJIS.get('tick', '')
 
+    if not is_admin_or_manager(ctx.author):
+        return await ctx.send(view=ErrorMessageView(t(ctx, "config_no_perms", cross=cross_emoji)))
+
     if not key or key.lower() in ("info", "list", "show"):
         return await ctx.send(view=StatusMessageView(t(ctx, "config_title")))
 
@@ -2624,9 +2628,6 @@ async def config_prefix_command(ctx: commands.Context, key: str | None = None, v
 
     if not target_lang:
         return await ctx.send(view=ErrorMessageView(t(ctx, "config_invalid_lang", cross=cross_emoji)))
-
-    if not is_admin_or_manager(ctx.author):
-        return await ctx.send(view=ErrorMessageView(t(ctx, "config_no_perms", cross=cross_emoji)))
 
     lang_clean = target_lang.strip().lower()
     if lang_clean in ("english", "eng", "en"):
