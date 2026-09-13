@@ -8,6 +8,8 @@
 *.db-wal
 blacklist.db
 data/
+cookies.txt
+cookies*
 
 # Python
 __pycache__/

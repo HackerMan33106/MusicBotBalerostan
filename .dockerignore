@@ -32,6 +32,8 @@ env
 *.db-wal
 blacklist.db
 data/
+cookies.txt
+cookies*
 *.log
 
 # Временные файлы

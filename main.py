@@ -76,20 +76,40 @@ intents.message_content = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, allowed_mentions=discord.AllowedMentions.none())
 
+COOKIE_FILE = None
+for candidate in [
+    os.getenv("COOKIE_PATH"),
+    os.path.join(os.getenv("DATA_DIR", ""), "cookies.txt") if os.getenv("DATA_DIR") else None,
+    "/app/data/cookies.txt",
+    "/app/cookies.txt",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"),
+    "cookies.txt"
+]:
+    if candidate and os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+        COOKIE_FILE = candidate
+        break
+
+def get_safe_cookies_path() -> str | None:
+    """Возвращает путь к изолированной копии cookies.txt, чтобы yt-dlp не затирал исходные куки гостевыми Set-Cookie"""
+    if not COOKIE_FILE or not os.path.exists(COOKIE_FILE):
+        return None
+    try:
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', prefix='cookies_')
+        tmp.close()
+        shutil.copyfile(COOKIE_FILE, tmp.name)
+        return tmp.name
+    except Exception:
+        return COOKIE_FILE
+
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
     'quiet': True,
     'default_search': 'ytsearch',
     'source_address': '0.0.0.0',
+    'remote_components': ['ejs:github'],
 }
-
-FFMPEG_OPTIONS = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn'
-}
-
-ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
 YTDL_SEARCH_OPTIONS = {
     'format': 'bestaudio/best',
@@ -99,7 +119,21 @@ YTDL_SEARCH_OPTIONS = {
     'skip_download': True,
     'source_address': '0.0.0.0',
     'socket_timeout': 10,
+    'remote_components': ['ejs:github'],
 }
+
+active_cookie_file = get_safe_cookies_path()
+if active_cookie_file:
+    print(f"Найден файл cookies: {COOKIE_FILE}, подключаем к yt-dlp...")
+    YTDL_OPTIONS['cookiefile'] = active_cookie_file
+    YTDL_SEARCH_OPTIONS['cookiefile'] = active_cookie_file
+
+FFMPEG_OPTIONS = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn'
+}
+
+ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
 def parse_colon_time(s: str) -> int:
     try:
@@ -1146,9 +1180,9 @@ async def find_best_youtube_stream(query: str, target_artist: str = '', target_t
                     audio_fmts = [f for f in track_data['formats'] if f.get('url') and (f.get('acodec') != 'none' or f.get('vcodec') == 'none')]
                     if audio_fmts:
                         stream_url = audio_fmts[-1]['url']
-                stream_url = stream_url or best_url
-                dur = track_data.get('duration') or best_entry.get('duration') or target_duration
-                return stream_url, dur
+                if stream_url and stream_url.startswith(('http://', 'https://')):
+                    dur = track_data.get('duration') or best_entry.get('duration') or target_duration
+                    return stream_url, dur
     except Exception as e:
         print(f"Ошибка умного поиска YouTube: {e}")
 
@@ -1161,10 +1195,12 @@ async def find_best_youtube_stream(query: str, target_artist: str = '', target_t
             audio_fmts = [f for f in data['formats'] if f.get('url') and (f.get('acodec') != 'none' or f.get('vcodec') == 'none')]
             if audio_fmts:
                 stream_url = audio_fmts[-1]['url']
-        return stream_url or query, data.get('duration') or target_duration
+        if stream_url and stream_url.startswith(('http://', 'https://')):
+            return stream_url, data.get('duration') or target_duration
     except Exception as e2:
         print(f"Ошибка fallback поиска YouTube: {e2}")
-        return query, target_duration
+
+    raise RuntimeError("YouTube заблокировал запрос (Sign in to confirm you’re not a bot). Пожалуйста, добавьте cookies.txt на сервере.")
 
 async def play_track_logic(requester: discord.Member, guild: discord.Guild, text_channel, link: str, send_error, send_queued):
     cross_emoji = EMOJIS['cross']

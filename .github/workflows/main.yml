@@ -41,9 +41,14 @@ jobs:
               docker compose down || true
               cd ~/app
 
-              echo ">>> 💾 Backing up data directory..."
+              echo ">>> 💾 Backing up data and cookies..."
               if [ -d "MusicBot/data" ]; then
                 mv MusicBot/data ~/app/musicbot_data_backup
+              fi
+              if [ -f "MusicBot/cookies.txt" ]; then
+                cp MusicBot/cookies.txt ~/app/musicbot_cookies_backup
+              elif [ -f "MusicBot/data/cookies.txt" ]; then
+                cp MusicBot/data/cookies.txt ~/app/musicbot_cookies_backup
               fi
 
               echo ">>> 🗑️ Removing old directory..."
@@ -54,11 +59,18 @@ jobs:
             git clone git@github.com:HackerMan33106/MusicBotBalerostan.git MusicBot
             cd MusicBot || exit 1
 
-            echo ">>> 📦 Restoring data directory..."
+            echo ">>> 📦 Restoring data directory & cookies..."
             if [ -d ~/app/musicbot_data_backup ]; then
               mv ~/app/musicbot_data_backup ./data
             else
               mkdir -p ./data
+            fi
+
+            if [ -f ~/app/musicbot_cookies_backup ]; then
+              cp ~/app/musicbot_cookies_backup ./cookies.txt
+              cp ~/app/musicbot_cookies_backup ./data/cookies.txt
+            elif [ -f ./data/cookies.txt ]; then
+              cp ./data/cookies.txt ./cookies.txt
             fi
 
             echo ">>> 📝 Creating .env file..."
