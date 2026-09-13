@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+.venv
+venv
+env
+
+# IDEs
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Данные бота (монтируются через volume)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+blacklist.db
+data/
+*.log
+
+# Временные файлы
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Документация
+*.md
+README.md
+
+# Примеры и кэш
+example/
+.cache

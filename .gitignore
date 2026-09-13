@@ -1,0 +1,42 @@
+# Переменные окружения
+.env
+
+# База данных и данные бота
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+blacklist.db
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs & Cache
+*.log
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Вспомогательное
+example/
+
+# GitHub Actions (только main.yml)
+.github/workflows/*
+!.github/workflows/main.yml

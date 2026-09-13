@@ -1,0 +1,89 @@
+name: Deploy Discord Music Bot to VPS
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+      SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+      SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+      COMMAND_PREFIX: ${{ secrets.COMMAND_PREFIX }}
+      MAX_DURATION: ${{ secrets.MAX_DURATION }}
+      EMBED_COLOR: ${{ secrets.EMBED_COLOR }}
+      INACTIVITY_TIMEOUT: ${{ secrets.INACTIVITY_TIMEOUT }}
+      EMPTY_QUEUE_TIMEOUT: ${{ secrets.EMPTY_QUEUE_TIMEOUT }}
+
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🚀 Deploy to VPS via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: 22
+          command_timeout: 30m
+          envs: DISCORD_TOKEN,SPOTIFY_CLIENT_ID,SPOTIFY_CLIENT_SECRET,COMMAND_PREFIX,MAX_DURATION,EMBED_COLOR,INACTIVITY_TIMEOUT,EMPTY_QUEUE_TIMEOUT
+          script: |
+            echo ">>> 📥 Updating code..."
+            cd ~/app || exit 1
+
+            # Останавливаем контейнеры и сохраняем data/
+            if [ -d "MusicBot" ]; then
+              echo ">>> 🛑 Stopping containers..."
+              cd MusicBot
+              docker compose down || true
+              cd ~/app
+
+              echo ">>> 💾 Backing up data directory..."
+              if [ -d "MusicBot/data" ]; then
+                mv MusicBot/data ~/app/musicbot_data_backup
+              fi
+
+              echo ">>> 🗑️ Removing old directory..."
+              sudo rm -rf MusicBot
+            fi
+
+            echo ">>> 🔄 Cloning repository..."
+            git clone git@github.com:HackerMan33106/MusicBotBalerostan.git MusicBot
+            cd MusicBot || exit 1
+
+            echo ">>> 📦 Restoring data directory..."
+            if [ -d ~/app/musicbot_data_backup ]; then
+              mv ~/app/musicbot_data_backup ./data
+            else
+              mkdir -p ./data
+            fi
+
+            echo ">>> 📝 Creating .env file..."
+            cat > .env << EOF
+            DISCORD_TOKEN=${DISCORD_TOKEN}
+            SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+            SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
+            COMMAND_PREFIX=${COMMAND_PREFIX:-!}
+            MAX_DURATION=${MAX_DURATION:-600}
+            EMBED_COLOR=${EMBED_COLOR:-0xFFA200}
+            INACTIVITY_TIMEOUT=${INACTIVITY_TIMEOUT:-10}
+            EMPTY_QUEUE_TIMEOUT=${EMPTY_QUEUE_TIMEOUT:-20}
+            DATA_DIR=/app/data
+            EOF
+
+            echo ">>> 🔨 Building new Docker images..."
+            docker compose build
+
+            echo ">>> 🚀 Starting containers..."
+            docker compose up -d
+
+            echo ">>> 🧹 Cleaning up old images..."
+            docker image prune -f
+
+            echo ">>> ✅ Deployment complete!"
+            echo ">>> 📊 Container status:"
+            docker compose ps
+
