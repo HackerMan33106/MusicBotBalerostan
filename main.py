@@ -26,6 +26,9 @@ SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
 COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "/")
+DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "ru").strip().lower()
+if DEFAULT_LANGUAGE not in ("ru", "en"):
+    DEFAULT_LANGUAGE = "ru"
 MAX_DURATION = int(os.getenv("MAX_DURATION", "900"))  # В секундах (по умолчанию 15 минут)
 INACTIVITY_TIMEOUT = int(os.getenv("INACTIVITY_TIMEOUT", "10"))  # Секунд до выхода при пустом ГС
 EMPTY_QUEUE_TIMEOUT = int(os.getenv("EMPTY_QUEUE_TIMEOUT", "20"))  # Секунд до выхода при пустой очереди
@@ -707,6 +710,214 @@ class BlacklistDB:
 
 db_blacklist = BlacklistDB()
 
+class SettingsDB:
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+        self._cache: dict[int, dict] = {}  # guild_id -> {'language': 'ru'}
+        self._init_db()
+        self._load_cache()
+
+    def _get_conn(self):
+        return sqlite3.connect(self.db_path)
+
+    def _init_db(self):
+        try:
+            with self._get_conn() as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS guild_settings (
+                        guild_id INTEGER PRIMARY KEY,
+                        language TEXT NOT NULL DEFAULT 'ru'
+                    )
+                """)
+                conn.commit()
+        except Exception as e:
+            print(f"Ошибка инициализации базы данных guild_settings: {e}")
+
+    def _load_cache(self):
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT guild_id, language FROM guild_settings")
+                for guild_id, language in cursor.fetchall():
+                    self._cache[guild_id] = {'language': language}
+        except Exception as e:
+            print(f"Ошибка загрузки кэша guild_settings: {e}")
+
+    def get_language(self, guild_id: int | None) -> str:
+        if not guild_id:
+            return DEFAULT_LANGUAGE
+        guild_conf = self._cache.get(guild_id)
+        if guild_conf and 'language' in guild_conf:
+            return guild_conf['language']
+        return DEFAULT_LANGUAGE
+
+    def set_language(self, guild_id: int, lang: str) -> bool:
+        norm_lang = 'en' if lang.lower() in ('english', 'eng', 'en') else 'ru'
+        try:
+            with self._get_conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO guild_settings (guild_id, language) VALUES (?, ?)",
+                    (guild_id, norm_lang)
+                )
+                conn.commit()
+        except Exception as e:
+            print(f"Ошибка сохранения языка для guild {guild_id}: {e}")
+            return False
+
+        if guild_id not in self._cache:
+            self._cache[guild_id] = {}
+        self._cache[guild_id]['language'] = norm_lang
+        return True
+
+    def get_all_configs(self) -> dict[int, dict]:
+        return dict(self._cache)
+
+db_settings = SettingsDB()
+
+TRANSLATIONS = {
+    'ru': {
+        'now_playing_title': 'Сейчас играет',
+        'track_requested_by': 'Трек запрошен {user}',
+        'action_by': 'Действие от {user}',
+        'queued_at_pos': '### Добавлено в очередь на позицию #{pos}',
+        'queued_hint': '-# Не тот трек? Попробуйте уточнить запрос или используйте `/search`',
+        'queue_up_next': 'Следующие треки',
+        'queue_empty': 'Очередь пуста.',
+        'nothing_playing': 'Сейчас ничего не играет.',
+        'left': 'осталось',
+        'queue_footer': 'Страница 1/1 • Треков в очереди: {count} • Длительность: {length}',
+        'queue_end': '### Достигнут конец очереди. Пожалуйста, добавьте еще треки!',
+        'no_prev': 'Нет предыдущего трека.',
+        'join_voice_channel': '### {cross} Пожалуйста, зайдите в голосовой канал (или перезайдите, если вы уже там)',
+        'not_in_voice': '### {cross} Бот не находится в голосовом канале.',
+        'same_voice_channel': '### {cross} Вы должны находиться в том же голосовом канале, что и бот ({channel}), чтобы использовать панель управления!',
+        'user_blacklisted_interaction': '### {cross} Вы находитесь в чёрном списке этого сервера и не можете взаимодействовать с ботом.',
+        'server_only_command': 'Эта команда доступна только на сервере.',
+        'reason_inactivity': 'Плеер остановлен, и бот покинул голосовой канал из-за неактивности',
+        'reason_empty_queue': 'Бот покинул голосовой канал из-за пустой очереди',
+        'reason_manual_stop': 'Бот покинул голосовой канал',
+        'provide_link_or_title': '### {cross} Укажите ссылку или название трека.',
+        'spotify_not_configured': '### {cross} Spotify API не настроен! Укажите SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET в файле .env',
+        'spotify_error': '### {cross} Ошибка Spotify API: {error}',
+        'stream_not_found': '### {cross} Не удалось найти аудиопоток: {error}',
+        'track_not_found': '### {cross} Не удалось найти трек: {error}',
+        'extract_error': '### {cross} Не удалось извлечь трек: {error}',
+        'track_too_long': '### {cross} Трек длится больше {max_dur}!',
+        'dur_min': '{val} мин.',
+        'dur_sec': '{val} сек.',
+        'search_query_empty': '### {cross} Укажите поисковый запрос.',
+        'search_not_found': '### {cross} Ничего не найдено по запросу `{query}`.',
+        'search_author_only': 'Только автор команды может использовать эти кнопки.',
+        'search_play_error': '### {cross} Не удалось воспроизвести выбранный трек: {error}',
+        'search_cancel': 'Поиск отменен.',
+        'bl_no_perms': '### {cross} У вас нет прав для управления чёрным списком (требуются права Администратора или Управление сервером).',
+        'bl_no_perms_view_others': '### {cross} У вас нет прав для просмотра статуса других пользователей.',
+        'bl_specify_user_add': '### {cross} Укажите пользователя, которого хотите добавить в чёрный список.',
+        'bl_specify_user_remove': '### {cross} Укажите пользователя, которого хотите удалить из чёрного списка.',
+        'bl_cannot_add_bot': '### {cross} Нельзя добавить бота в чёрный список.',
+        'bl_cannot_add_owner': '### {cross} Нельзя добавить создателя сервера в чёрный список.',
+        'bl_already_listed': '### {cross} Пользователь {user} уже находится в чёрном списке.',
+        'bl_not_listed': '### {cross} Пользователя {user} нет в чёрном списке.',
+        'bl_user_is_blacklisted': '### {cross} Пользователь {user} **находится** в чёрном списке этого сервера.',
+        'bl_user_not_blacklisted': '### {tick} Пользователь {user} **не находится** в чёрном списке этого сервера.',
+        'bl_you_are_blacklisted': '### {cross} Вы **находитесь** в чёрном списке этого сервера.',
+        'bl_you_not_blacklisted': '### {tick} Вы **не находитесь** в чёрном списке этого сервера.',
+        'bl_list_empty': '### {tick} Чёрный список на этом сервере пуст.',
+        'bl_list_title': '### Чёрный список сервера ({count}):\n\n',
+        'bl_added_by': ' • Добавил: <@{added_by}>',
+        'bl_user_added': '### {tick} Пользователь {user} успешно добавлен в чёрный список.',
+        'bl_user_removed': '### {tick} Пользователь {user} успешно удален из чёрного списка.',
+        'ping_measuring': '### 🏓 Понг...',
+        'ping_response': '### 🏓 Понг! {delay}мс {emoji}\nGateway: `{ws_delay}мс` • API: `{delay}мс`\n-# {status}',
+        'ping_status_normal': 'Бот работает нормально.',
+        'ping_status_almost': 'Бот работает почти нормально.',
+        'config_title': '### ⚙️ Настройки бота\n• **Текущий язык:** Русский 🇷🇺 (`ru`)\n-# Чтобы изменить язык, используйте: `/config language: english` или `/config language: russian`',
+        'config_lang_set': '### {tick} Язык бота успешно изменён на **Русский** 🇷🇺',
+        'config_no_perms': '### {cross} У вас нет прав для изменения настроек (требуются права Администратора или Управление сервером).',
+        'config_invalid_lang': '### {cross} Неверный язык! Доступные варианты: `english` (`eng`, `en`) или `russian` (`ru`).',
+    },
+    'en': {
+        'now_playing_title': 'Now Playing',
+        'track_requested_by': 'Track requested by {user}',
+        'action_by': 'Action by {user}',
+        'queued_at_pos': '### Queued at position #{pos}',
+        'queued_hint': '-# Not the correct track? Try being more specific or use `/search`',
+        'queue_up_next': 'Up Next',
+        'queue_empty': 'Queue is empty.',
+        'nothing_playing': 'Nothing is playing right now.',
+        'left': 'left',
+        'queue_footer': 'Page 1/1 • Tracks in queue: {count} • Length: {length}',
+        'queue_end': '### Reached the end of the queue. Please queue some track(s) again!',
+        'no_prev': 'No previous track.',
+        'join_voice_channel': '### {cross} Please join a voice channel, or rejoin if you are in one',
+        'not_in_voice': '### {cross} Bot is not in a voice channel.',
+        'same_voice_channel': '### {cross} You must be in the same voice channel as the bot ({channel}) to use the control panel!',
+        'user_blacklisted_interaction': '### {cross} You are blacklisted on this server and cannot interact with the bot.',
+        'server_only_command': 'This command is only available in a server.',
+        'reason_inactivity': 'Destroyed the player and left the voice channel due to inactivity',
+        'reason_empty_queue': 'Left the voice channel due to empty queue',
+        'reason_manual_stop': 'Left the voice channel',
+        'provide_link_or_title': '### {cross} Please provide a link or track title.',
+        'spotify_not_configured': '### {cross} Spotify API is not configured! Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env',
+        'spotify_error': '### {cross} Spotify API error: {error}',
+        'stream_not_found': '### {cross} Failed to find audio stream: {error}',
+        'track_not_found': '### {cross} Failed to find track: {error}',
+        'extract_error': '### {cross} Failed to extract track: {error}',
+        'track_too_long': '### {cross} Track duration exceeds {max_dur}!',
+        'dur_min': '{val} min.',
+        'dur_sec': '{val} sec.',
+        'search_query_empty': '### {cross} Please provide a search query.',
+        'search_not_found': '### {cross} Nothing found for query `{query}`.',
+        'search_author_only': 'Only the author of the command can use these buttons.',
+        'search_play_error': '### {cross} Failed to play selected track: {error}',
+        'search_cancel': 'Search cancelled.',
+        'bl_no_perms': '### {cross} You do not have permission to manage the blacklist (Administrator or Manage Server required).',
+        'bl_no_perms_view_others': '### {cross} You do not have permission to view other users\' status.',
+        'bl_specify_user_add': '### {cross} Please specify the user you want to add to the blacklist.',
+        'bl_specify_user_remove': '### {cross} Please specify the user you want to remove from the blacklist.',
+        'bl_cannot_add_bot': '### {cross} Cannot add the bot to the blacklist.',
+        'bl_cannot_add_owner': '### {cross} Cannot add the server owner to the blacklist.',
+        'bl_already_listed': '### {cross} User {user} is already blacklisted.',
+        'bl_not_listed': '### {cross} User {user} is not in the blacklist.',
+        'bl_user_is_blacklisted': '### {cross} User {user} **is** blacklisted on this server.',
+        'bl_user_not_blacklisted': '### {tick} User {user} is **not** blacklisted on this server.',
+        'bl_you_are_blacklisted': '### {cross} You **are** blacklisted on this server.',
+        'bl_you_not_blacklisted': '### {tick} You are **not** blacklisted on this server.',
+        'bl_list_empty': '### {tick} The blacklist on this server is empty.',
+        'bl_list_title': '### Server Blacklist ({count}):\n\n',
+        'bl_added_by': ' • Added by: <@{added_by}>',
+        'bl_user_added': '### {tick} User {user} was successfully added to the blacklist.',
+        'bl_user_removed': '### {tick} User {user} was successfully removed from the blacklist.',
+        'ping_measuring': '### 🏓 Pong...',
+        'ping_response': '### 🏓 Pong! {delay}ms {emoji}\nGateway: `{ws_delay}ms` • API: `{delay}ms`\n-# {status}',
+        'ping_status_normal': 'Bot is working normally.',
+        'ping_status_almost': 'Bot is working almost normally.',
+        'config_title': '### ⚙️ Bot Settings\n• **Current language:** English 🇬🇧 (`en`)\n-# To change the language, use: `/config language: english` or `/config language: russian`',
+        'config_lang_set': '### {tick} Bot language has been successfully set to **English** 🇬🇧',
+        'config_no_perms': '### {cross} You do not have permission to manage settings (Administrator or Manage Server required).',
+        'config_invalid_lang': '### {cross} Invalid language! Available options: `english` (`eng`, `en`) or `russian` (`ru`).',
+    }
+}
+
+def get_target_guild_id(target) -> int | None:
+    if target is None:
+        return None
+    if isinstance(target, int):
+        return target
+    if hasattr(target, 'guild_id') and target.guild_id:
+        return target.guild_id
+    if hasattr(target, 'guild') and target.guild:
+        return target.guild.id
+    return None
+
+def t(target, key: str, **kwargs) -> str:
+    guild_id = get_target_guild_id(target)
+    lang = db_settings.get_language(guild_id)
+    tmpl = TRANSLATIONS.get(lang, {}).get(key) or TRANSLATIONS.get('ru', {}).get(key) or key
+    if kwargs:
+        return tmpl.format(**kwargs)
+    return tmpl
+
 def is_admin_or_manager(member: discord.Member | discord.User | None) -> bool:
     if not member or not hasattr(member, 'guild') or not member.guild:
         return False
@@ -747,12 +958,13 @@ class ErrorMessageView(discord.ui.LayoutView):
         self.add_item(container)
 
 class QueuedMessageView(discord.ui.LayoutView):
-    def __init__(self, track_obj: Track, pos: int):
+    def __init__(self, track_obj: Track, pos: int, guild_id: int | None = None):
         super().__init__(timeout=None)
         container = discord.ui.Container(accent_color=EMBED_COLOR)
 
+        header_text = t(guild_id, "queued_at_pos", pos=pos)
         track_text = (
-            f"### Queued at position #{pos}\n"
+            f"{header_text}\n"
             f"{format_track_link(track_obj.title, track_obj.artist, track_obj.url, track_obj.artist_url)} [{format_time(track_obj.duration)}]"
         )
 
@@ -764,9 +976,7 @@ class QueuedMessageView(discord.ui.LayoutView):
             container.add_item(discord.ui.TextDisplay(track_text))
 
         container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.TextDisplay(
-            "-# Not the correct track? Try being more specific or use `/search`"
-        ))
+        container.add_item(discord.ui.TextDisplay(t(guild_id, "queued_hint")))
         self.add_item(container)
 
 class PlayerControlView(discord.ui.LayoutView):
@@ -790,8 +1000,9 @@ class PlayerControlView(discord.ui.LayoutView):
 
         # 1. Заголовок и информация о треке
         play_emoji = EMOJIS.get('play', '▶')
+        np_title = t(self.player.guild, "now_playing_title")
         track_info = (
-            f"### {play_emoji} Now Playing\n"
+            f"### {play_emoji} {np_title}\n"
             f"{format_track_link(curr.title, curr.artist, curr.url, curr.artist_url)} [{format_time(curr.duration)}]"
         )
 
@@ -855,9 +1066,11 @@ class PlayerControlView(discord.ui.LayoutView):
         container.add_item(discord.ui.Separator())
 
         # 5. Маленькая подпись после второго разделителя
-        footer_text = f"-# Track requested by {curr.requester.mention}"
+        req_str = t(self.player.guild, "track_requested_by", user=curr.requester.mention)
+        footer_text = f"-# {req_str}"
         if self.action_user:
-            footer_text += f" • Action by {self.action_user.mention}"
+            act_str = t(self.player.guild, "action_by", user=self.action_user.mention)
+            footer_text += f" • {act_str}"
         container.add_item(discord.ui.TextDisplay(footer_text))
 
         self.add_item(container)
@@ -869,18 +1082,18 @@ class PlayerControlView(discord.ui.LayoutView):
 
         # 1. Проверка нахождения в том же голосовом канале с ботом
         if not vc or not vc.channel:
-            view = ErrorMessageView(f"### {cross_emoji} Бот не находится в голосовом канале.")
+            view = ErrorMessageView(t(interaction, "not_in_voice", cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return False
 
         if not user_voice or not user_voice.channel or user_voice.channel.id != vc.channel.id:
-            view = ErrorMessageView(f"### {cross_emoji} Вы должны находиться в том же голосовом канале, что и бот ({vc.channel.name}), чтобы использовать панель управления!")
+            view = ErrorMessageView(t(interaction, "same_voice_channel", channel=vc.channel.name, cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return False
 
         # 2. Проверка чёрного списка (только если пользователь уже находится в нужном ГС)
         if db_blacklist.is_blacklisted(interaction.guild_id, interaction.user.id):
-            view = ErrorMessageView(f"### {cross_emoji} Вы находитесь в чёрном списке этого сервера и не можете взаимодействовать с ботом.")
+            view = ErrorMessageView(t(interaction, "user_blacklisted_interaction", cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return False
 
@@ -889,7 +1102,7 @@ class PlayerControlView(discord.ui.LayoutView):
     async def on_pause_resume(self, interaction: discord.Interaction):
         vc = self.player.voice_client
         if not vc:
-            return await interaction.response.send_message("Бот не в голосовом канале.", ephemeral=True)
+            return await interaction.response.send_message(t(interaction, "not_in_voice", cross=EMOJIS.get('cross', '')), ephemeral=True)
 
         if vc.is_playing():
             vc.pause()
@@ -912,7 +1125,7 @@ class PlayerControlView(discord.ui.LayoutView):
             self.player.voice_client.stop()
             await interaction.response.defer()
         else:
-            await interaction.response.send_message("Нет предыдущего трека.", ephemeral=True)
+            await interaction.response.send_message(t(interaction, "no_prev"), ephemeral=True)
 
     async def on_next(self, interaction: discord.Interaction):
         vc = self.player.voice_client
@@ -921,7 +1134,7 @@ class PlayerControlView(discord.ui.LayoutView):
             vc.stop()
             await interaction.response.defer()
         else:
-            await interaction.response.send_message("Очередь пуста.", ephemeral=True)
+            await interaction.response.send_message(t(interaction, "queue_empty"), ephemeral=True)
 
     async def on_stop(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -930,25 +1143,29 @@ class PlayerControlView(discord.ui.LayoutView):
     async def on_queue(self, interaction: discord.Interaction):
         curr = self.player.current
         if not curr:
-            return await interaction.response.send_message("Сейчас ничего не играет.", ephemeral=True)
+            return await interaction.response.send_message(t(interaction, "nothing_playing"), ephemeral=True)
 
         elapsed = time.time() - (curr.start_time or time.time())
         left = max(0, curr.duration - elapsed)
+        np_title = t(interaction, "now_playing_title")
+        left_str = t(interaction, "left")
 
         desc = (
-            f"### ▶ Now Playing\n"
-            f"{format_track_link(curr.title, curr.artist, curr.url)} [{format_time(left)} осталось]\n\n"
+            f"### ▶ {np_title}\n"
+            f"{format_track_link(curr.title, curr.artist, curr.url)} [{format_time(left)} {left_str}]\n\n"
         )
 
         queue_icon = EMOJIS['queue']
         if self.player.queue:
-            desc += f"### {queue_icon} Up Next\n"
-            total_sec = sum(t.duration for t in self.player.queue)
+            up_next_title = t(interaction, "queue_up_next")
+            desc += f"### {queue_icon} {up_next_title}\n"
+            total_sec = sum(tr_obj.duration for tr_obj in self.player.queue)
             for i, tr in enumerate(self.player.queue[:10], start=1):
                 desc += f"**{i}.** {format_track_link(tr.title, tr.artist, tr.url)} [{format_time(tr.duration)}]\n"
-            desc += f"\n-# Page 1/1 • Tracks in queue: {len(self.player.queue)} • Length: {format_time(total_sec)}"
+            footer_line = t(interaction, "queue_footer", count=len(self.player.queue), length=format_time(total_sec))
+            desc += f"\n-# {footer_line}"
         else:
-            desc += "-# Очередь пуста."
+            desc += f"-# {t(interaction, 'queue_empty')}"
 
         view = discord.ui.LayoutView(timeout=None)
         container = discord.ui.Container(accent_color=EMBED_COLOR)
@@ -1049,7 +1266,7 @@ class MusicPlayer:
                 await asyncio.sleep(INACTIVITY_TIMEOUT)
                 vc = self.voice_client or self.guild.voice_client
                 if vc and vc.is_connected() and self.get_human_count() == 0:
-                    asyncio.create_task(self.destroy(reason_text="Destroyed the player and left the voice channel due to inactivity"))
+                    asyncio.create_task(self.destroy(reason_text=t(self.guild, "reason_inactivity")))
             except asyncio.CancelledError:
                 pass
             except Exception as e:
@@ -1079,9 +1296,9 @@ class MusicPlayer:
                 vc = self.voice_client or self.guild.voice_client
                 if vc and vc.is_connected() and not self.current and not self.queue:
                     if self.get_human_count() == 0:
-                        reason = "Destroyed the player and left the voice channel due to inactivity"
+                        reason = t(self.guild, "reason_inactivity")
                     else:
-                        reason = "Left the voice channel due to empty queue"
+                        reason = t(self.guild, "reason_empty_queue")
                     asyncio.create_task(self.destroy(reason_text=reason))
             except asyncio.CancelledError:
                 pass
@@ -1111,8 +1328,9 @@ class MusicPlayer:
 
             if self.text_channel:
                 try:
-                    footer = f"-# Action by {action_user.mention}" if action_user else None
-                    await self.text_channel.send(view=StatusMessageView("### Reached the end of the queue. Please queue some track(s) again!", footer=footer), allowed_mentions=discord.AllowedMentions.none())
+                    act_text = t(self.guild, "action_by", user=action_user.mention) if action_user else None
+                    footer = f"-# {act_text}" if act_text else None
+                    await self.text_channel.send(view=StatusMessageView(t(self.guild, "queue_end"), footer=footer), allowed_mentions=discord.AllowedMentions.none())
                 except Exception:
                     pass
 
@@ -1161,8 +1379,9 @@ class MusicPlayer:
 
     async def stop_current(self, user: discord.User | discord.Member | None = None):
         """Остановка воспроизведения пользователем через кнопку Стоп: трек сразу останавливается, бот сразу выходит"""
-        footer = f"-# Action by {user.mention}" if user else None
-        await self.destroy(reason_text="Left the voice channel", footer_text=footer)
+        act_text = t(self.guild, "action_by", user=user.mention) if user else None
+        footer = f"-# {act_text}" if act_text else None
+        await self.destroy(reason_text=t(self.guild, "reason_manual_stop"), footer_text=footer)
 
     async def destroy(self, reason_text: str, footer_text: str | None = None):
         """Полная остановка плеера и выход из голосового канала"""
@@ -1387,7 +1606,7 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
     match = re.search(r"spotify\.com/track/([a-zA-Z0-9]+)", clean_link)
     if match:
         if not sp:
-            await send_error(ErrorMessageView(f"### {cross_emoji} Spotify API не настроен! Укажите SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET в файле .env"))
+            await send_error(ErrorMessageView(t(guild, "spotify_not_configured", cross=cross_emoji)))
             return
 
         sp_id = match.group(1)
@@ -1401,7 +1620,7 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
             images = sp_track.get('album', {}).get('images', [])
             thumbnail = images[0].get('url') if images else None
         except Exception as e:
-            await send_error(ErrorMessageView(f"### {cross_emoji} Ошибка Spotify API: {e}"))
+            await send_error(ErrorMessageView(t(guild, "spotify_error", cross=cross_emoji, error=e)))
             return
 
         try:
@@ -1418,7 +1637,7 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
             if not thumbnail:
                 thumbnail = stream_res.thumbnail
         except Exception as e:
-            await send_error(ErrorMessageView(f"### {cross_emoji} Не удалось найти аудиопоток: {e}"))
+            await send_error(ErrorMessageView(t(guild, "stream_not_found", cross=cross_emoji, error=e)))
             return
     elif not clean_link.startswith(('http://', 'https://')):
         # Поисковый текстовый запрос (например, "Go Go Maniac", "RATATATA")
@@ -1466,7 +1685,7 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
                 thumbnail = stream_res.thumbnail
                 artist_url = None
             except Exception as e:
-                await send_error(ErrorMessageView(f"### {cross_emoji} Не удалось найти трек: {e}"))
+                await send_error(ErrorMessageView(t(guild, "track_not_found", cross=cross_emoji, error=e)))
                 return
     else:
         loop = asyncio.get_running_loop()
@@ -1516,12 +1735,12 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
                 else:
                     extracted_artist = 'Unknown artist'
         except Exception as e:
-            await send_error(ErrorMessageView(f"### {cross_emoji} Не удалось извлечь трек: {e}"))
+            await send_error(ErrorMessageView(t(guild, "extract_error", cross=cross_emoji, error=e)))
             return
 
     if duration and duration > MAX_DURATION:
-        max_dur_str = f"{MAX_DURATION // 60} мин." if MAX_DURATION >= 60 else f"{MAX_DURATION} сек."
-        await send_error(ErrorMessageView(f"### {cross_emoji} Трек длится больше {max_dur_str}!"))
+        max_dur_str = t(guild, "dur_min", val=MAX_DURATION // 60) if MAX_DURATION >= 60 else t(guild, "dur_sec", val=MAX_DURATION)
+        await send_error(ErrorMessageView(t(guild, "track_too_long", cross=cross_emoji, max_dur=max_dur_str)))
         return
 
     track_obj = Track(
@@ -1539,7 +1758,7 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
     pos = len(player.queue) + 1
 
     player.queue.append(track_obj)
-    await send_queued(QueuedMessageView(track_obj, pos))
+    await send_queued(QueuedMessageView(track_obj, pos, guild_id=guild.id if guild else None))
 
     if not is_playing:
         await player.play_next()
@@ -1553,7 +1772,7 @@ async def play_command(interaction: discord.Interaction, link: str):
     cross_emoji = EMOJIS['cross']
 
     if not interaction.user.voice or not interaction.user.voice.channel:
-        view = ErrorMessageView(f"### {cross_emoji} Please join a voice channel, or rejoin if you are in one")
+        view = ErrorMessageView(t(interaction, "join_voice_channel", cross=cross_emoji))
         await interaction.response.send_message(view=view, ephemeral=True)
         return
 
@@ -1574,12 +1793,12 @@ async def play_text_command(ctx: commands.Context, *, link: str = ""):
     if clean_link.lower().startswith("link:"):
         clean_link = clean_link[5:].strip()
     if not clean_link:
-        view = ErrorMessageView(f"### {cross_emoji} Укажите ссылку или название трека.")
+        view = ErrorMessageView(t(ctx, "provide_link_or_title", cross=cross_emoji))
         await ctx.send(view=view)
         return
 
     if not ctx.author.voice or not ctx.author.voice.channel:
-        view = ErrorMessageView(f"### {cross_emoji} Please join a voice channel, or rejoin if you are in one")
+        view = ErrorMessageView(t(ctx, "join_voice_channel", cross=cross_emoji))
         await ctx.send(view=view)
         return
 
@@ -1874,7 +2093,7 @@ class SearchView(discord.ui.LayoutView):
                 pass
             return False
         if interaction.user.id != self.author.id:
-            await interaction.response.send_message("Только автор команды может использовать эти кнопки.", ephemeral=True)
+            await interaction.response.send_message(t(interaction, "search_author_only"), ephemeral=True)
             return False
         return True
 
@@ -1899,7 +2118,7 @@ class SearchView(discord.ui.LayoutView):
             return
 
         if new_platform == "spotify" and not sp:
-            await interaction.response.send_message("Spotify API не настроен.", ephemeral=True)
+            await interaction.response.send_message(t(interaction, "spotify_not_configured", cross=EMOJIS.get('cross', '')), ephemeral=True)
             return
 
         await interaction.response.defer()
@@ -1928,7 +2147,7 @@ class SearchView(discord.ui.LayoutView):
 
         cross_emoji = EMOJIS.get('cross', '')
         if not interaction.user.voice or not interaction.user.voice.channel:
-            view = ErrorMessageView(f"### {cross_emoji} Please join a voice channel, or rejoin if you are in one")
+            view = ErrorMessageView(t(interaction, "join_voice_channel", cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
 
@@ -1999,8 +2218,8 @@ class SearchView(discord.ui.LayoutView):
                         duration = probe_res['duration']
 
             if duration and duration > MAX_DURATION:
-                max_dur_str = f"{MAX_DURATION // 60} мин." if MAX_DURATION >= 60 else f"{MAX_DURATION} сек."
-                await interaction.followup.send(view=ErrorMessageView(f"### {cross_emoji} Трек длится больше {max_dur_str}!"), ephemeral=True)
+                max_dur_str = t(interaction, "dur_min", val=MAX_DURATION // 60) if MAX_DURATION >= 60 else t(interaction, "dur_sec", val=MAX_DURATION)
+                await interaction.followup.send(view=ErrorMessageView(t(interaction, "track_too_long", cross=cross_emoji, max_dur=max_dur_str)), ephemeral=True)
                 return
 
             track_obj = Track(
@@ -2015,14 +2234,14 @@ class SearchView(discord.ui.LayoutView):
             )
         except Exception as e:
             traceback.print_exc()
-            await interaction.channel.send(view=ErrorMessageView(f"### {cross_emoji} Не удалось воспроизвести выбранный трек: {e}"), allowed_mentions=discord.AllowedMentions.none())
+            await interaction.channel.send(view=ErrorMessageView(t(interaction, "search_play_error", cross=cross_emoji, error=e)), allowed_mentions=discord.AllowedMentions.none())
             return
 
         is_playing = player.voice_client.is_playing() or player.voice_client.is_paused()
         pos = len(player.queue) + 1
         player.queue.append(track_obj)
 
-        await interaction.channel.send(view=QueuedMessageView(track_obj, pos), allowed_mentions=discord.AllowedMentions.none())
+        await interaction.channel.send(view=QueuedMessageView(track_obj, pos, guild_id=interaction.guild_id), allowed_mentions=discord.AllowedMentions.none())
 
         if not is_playing:
             await player.play_next()
@@ -2049,7 +2268,7 @@ class SearchView(discord.ui.LayoutView):
 async def search_command(interaction: discord.Interaction, input: str, source: str = "youtube"):
     cross_emoji = EMOJIS.get('cross', '')
     if not interaction.user.voice or not interaction.user.voice.channel:
-        view = ErrorMessageView(f"### {cross_emoji} Please join a voice channel, or rejoin if you are in one")
+        view = ErrorMessageView(t(interaction, "join_voice_channel", cross=cross_emoji))
         await interaction.response.send_message(view=view, ephemeral=True)
         return
 
@@ -2057,7 +2276,7 @@ async def search_command(interaction: discord.Interaction, input: str, source: s
 
     results = await search_tracks(input, source)
     if not results:
-        view = ErrorMessageView(f"### {cross_emoji} Ничего не найдено по запросу `{input}`.")
+        view = ErrorMessageView(t(interaction, "search_not_found", cross=cross_emoji, query=input))
         await interaction.followup.send(view=view)
         return
 
@@ -2069,7 +2288,7 @@ async def search_command(interaction: discord.Interaction, input: str, source: s
 async def search_text_command(ctx: commands.Context, *, args: str = ""):
     cross_emoji = EMOJIS.get('cross', '')
     if not ctx.author.voice or not ctx.author.voice.channel:
-        view = ErrorMessageView(f"### {cross_emoji} Please join a voice channel, or rejoin if you are in one")
+        view = ErrorMessageView(t(ctx, "join_voice_channel", cross=cross_emoji))
         await ctx.send(view=view)
         return
 
@@ -2091,13 +2310,13 @@ async def search_text_command(ctx: commands.Context, *, args: str = ""):
         query = query[6:].strip()
 
     if not query:
-        view = ErrorMessageView(f"### {cross_emoji} Укажите поисковый запрос.")
+        view = ErrorMessageView(t(ctx, "search_query_empty", cross=cross_emoji))
         await ctx.send(view=view)
         return
 
     results = await search_tracks(query, source)
     if not results:
-        view = ErrorMessageView(f"### {cross_emoji} Ничего не найдено по запросу `{query}`.")
+        view = ErrorMessageView(t(ctx, "search_not_found", cross=cross_emoji, query=query))
         await ctx.send(view=view)
         return
 
@@ -2110,8 +2329,8 @@ async def global_tree_interaction_check(interaction: discord.Interaction) -> boo
     if not interaction.guild_id:
         return True
 
-    # Команда /bl доступна для проверки собственного статуса
-    if interaction.command and interaction.command.name == "bl":
+    # Команды /bl, /ping и /config доступны для проверки
+    if interaction.command and interaction.command.name in ("bl", "ping", "config"):
         return True
 
     if db_blacklist.is_blacklisted(interaction.guild_id, interaction.user.id):
@@ -2127,6 +2346,8 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 @bot.check
 async def global_command_check(ctx: commands.Context) -> bool:
+    if ctx.command and ctx.command.name in ("bl", "ping", "config"):
+        return True
     if ctx.guild and db_blacklist.is_blacklisted(ctx.guild.id, ctx.author.id):
         try:
             await ctx.message.delete()
@@ -2151,7 +2372,7 @@ async def bl_slash_command(
     user: discord.Member | None = None
 ):
     if not interaction.guild:
-        await interaction.response.send_message("Эта команда доступна только на сервере.", ephemeral=True)
+        await interaction.response.send_message(t(interaction, "server_only_command"), ephemeral=True)
         return
 
     cross_emoji = EMOJIS.get('cross', '')
@@ -2164,27 +2385,27 @@ async def bl_slash_command(
     if not act or act == "list":
         if user is not None:
             if not is_admin and user.id != interaction.user.id:
-                view = ErrorMessageView(f"### {cross_emoji} У вас нет прав для просмотра статуса других пользователей.")
+                view = ErrorMessageView(t(interaction, "bl_no_perms_view_others", cross=cross_emoji))
                 await interaction.response.send_message(view=view, ephemeral=True)
                 return
 
             if db_blacklist.is_blacklisted(interaction.guild_id, user.id):
-                view = ErrorMessageView(f"### {cross_emoji} Пользователь {user.mention} **находится** в чёрном списке этого сервера.")
+                view = ErrorMessageView(t(interaction, "bl_user_is_blacklisted", cross=cross_emoji, user=user.mention))
             else:
-                view = StatusMessageView(f"### {tick_emoji} Пользователь {user.mention} **не находится** в чёрном списке этого сервера.")
+                view = StatusMessageView(t(interaction, "bl_user_not_blacklisted", tick=tick_emoji, user=user.mention))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
 
         if is_admin:
             blacklisted = db_blacklist.get_blacklisted_details(interaction.guild_id)
             if not blacklisted:
-                view = StatusMessageView(f"### {tick_emoji} Чёрный список на этом сервере пуст.")
+                view = StatusMessageView(t(interaction, "bl_list_empty", tick=tick_emoji))
                 await interaction.response.send_message(view=view, ephemeral=True)
                 return
 
-            desc = f"### Чёрный список сервера ({len(blacklisted)}):\n\n"
+            desc = t(interaction, "bl_list_title", count=len(blacklisted))
             for item in blacklisted:
-                added_by_str = f" • Добавил: <@{item['added_by']}>" if item.get('added_by') else ""
+                added_by_str = t(interaction, "bl_added_by", added_by=item['added_by']) if item.get('added_by') else ""
                 desc += f"• <@{item['user_id']}> (`{item['user_id']}`){added_by_str}\n"
 
             view = StatusMessageView(desc)
@@ -2192,63 +2413,63 @@ async def bl_slash_command(
             return
         else:
             if db_blacklist.is_blacklisted(interaction.guild_id, interaction.user.id):
-                view = ErrorMessageView(f"### {cross_emoji} Вы **находитесь** в чёрном списке этого сервера.")
+                view = ErrorMessageView(t(interaction, "bl_you_are_blacklisted", cross=cross_emoji))
             else:
-                view = StatusMessageView(f"### {tick_emoji} Вы **не находитесь** в чёрном списке этого сервера.")
+                view = StatusMessageView(t(interaction, "bl_you_not_blacklisted", tick=tick_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
 
     # 2. Добавление в чёрный список (add / a)
     if act in ("add", "a"):
         if not is_admin:
-            view = ErrorMessageView(f"### {cross_emoji} У вас нет прав для управления чёрным списком (требуются права Администратора или Управление сервером).")
+            view = ErrorMessageView(t(interaction, "bl_no_perms", cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
 
         if not user:
-            view = ErrorMessageView(f"### {cross_emoji} Укажите пользователя, которого хотите добавить в чёрный список.")
+            view = ErrorMessageView(t(interaction, "bl_specify_user_add", cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
 
         if user.id == bot.user.id:
-            view = ErrorMessageView(f"### {cross_emoji} Нельзя добавить бота в чёрный список.")
+            view = ErrorMessageView(t(interaction, "bl_cannot_add_bot", cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
 
         if user.id == interaction.guild.owner_id:
-            view = ErrorMessageView(f"### {cross_emoji} Нельзя добавить создателя сервера в чёрный список.")
+            view = ErrorMessageView(t(interaction, "bl_cannot_add_owner", cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
 
         if db_blacklist.is_blacklisted(interaction.guild_id, user.id):
-            view = ErrorMessageView(f"### {cross_emoji} Пользователь {user.mention} уже находится в чёрном списке.")
+            view = ErrorMessageView(t(interaction, "bl_already_listed", cross=cross_emoji, user=user.mention))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
 
         db_blacklist.add(interaction.guild_id, user.id, added_by=interaction.user.id)
-        view = StatusMessageView(f"### {tick_emoji} Пользователь {user.mention} успешно добавлен в чёрный список.")
+        view = StatusMessageView(t(interaction, "bl_user_added", tick=tick_emoji, user=user.mention))
         await interaction.response.send_message(view=view, ephemeral=True)
         return
 
     # 3. Удаление из чёрного списка (remove / r)
     if act in ("remove", "r"):
         if not is_admin:
-            view = ErrorMessageView(f"### {cross_emoji} У вас нет прав для управления чёрным списком (требуются права Администратора или Управление сервером).")
+            view = ErrorMessageView(t(interaction, "bl_no_perms", cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
 
         if not user:
-            view = ErrorMessageView(f"### {cross_emoji} Укажите пользователя, которого хотите удалить из чёрного списка.")
+            view = ErrorMessageView(t(interaction, "bl_specify_user_remove", cross=cross_emoji))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
 
         if not db_blacklist.is_blacklisted(interaction.guild_id, user.id):
-            view = ErrorMessageView(f"### {cross_emoji} Пользователя {user.mention} нет в чёрном списке.")
+            view = ErrorMessageView(t(interaction, "bl_not_listed", cross=cross_emoji, user=user.mention))
             await interaction.response.send_message(view=view, ephemeral=True)
             return
 
         db_blacklist.remove(interaction.guild_id, user.id)
-        view = StatusMessageView(f"### {tick_emoji} Пользователь {user.mention} успешно удален из чёрного списка.")
+        view = StatusMessageView(t(interaction, "bl_user_removed", tick=tick_emoji, user=user.mention))
         await interaction.response.send_message(view=view, ephemeral=True)
         return
 
@@ -2273,52 +2494,150 @@ async def bl_prefix_command(ctx: commands.Context, action: str | None = None, us
     if not act or act in ("list", "check"):
         if user is not None:
             if not is_admin and user.id != ctx.author.id:
-                return await ctx.send(view=ErrorMessageView(f"### {cross_emoji} У вас нет прав для просмотра статуса других пользователей."))
+                return await ctx.send(view=ErrorMessageView(t(ctx, "bl_no_perms_view_others", cross=cross_emoji)))
             if db_blacklist.is_blacklisted(ctx.guild.id, user.id):
-                return await ctx.send(view=ErrorMessageView(f"### {cross_emoji} Пользователь {user.mention} **находится** в чёрном списке этого сервера."))
+                return await ctx.send(view=ErrorMessageView(t(ctx, "bl_user_is_blacklisted", cross=cross_emoji, user=user.mention)))
             else:
-                return await ctx.send(view=StatusMessageView(f"### {tick_emoji} Пользователь {user.mention} **не находится** в чёрном списке этого сервера."))
+                return await ctx.send(view=StatusMessageView(t(ctx, "bl_user_not_blacklisted", tick=tick_emoji, user=user.mention)))
 
         if is_admin:
             blacklisted = db_blacklist.get_blacklisted_details(ctx.guild.id)
             if not blacklisted:
-                return await ctx.send(view=StatusMessageView(f"### {tick_emoji} Чёрный список на этом сервере пуст."))
-            desc = f"### Чёрный список сервера ({len(blacklisted)}):\n\n"
+                return await ctx.send(view=StatusMessageView(t(ctx, "bl_list_empty", tick=tick_emoji)))
+            desc = t(ctx, "bl_list_title", count=len(blacklisted))
             for item in blacklisted:
-                added_by_str = f" • Добавил: <@{item['added_by']}>" if item.get('added_by') else ""
+                added_by_str = t(ctx, "bl_added_by", added_by=item['added_by']) if item.get('added_by') else ""
                 desc += f"• <@{item['user_id']}> (`{item['user_id']}`){added_by_str}\n"
             return await ctx.send(view=StatusMessageView(desc))
         else:
             if db_blacklist.is_blacklisted(ctx.guild.id, ctx.author.id):
-                return await ctx.send(view=ErrorMessageView(f"### {cross_emoji} Вы **находитесь** в чёрном списке этого сервера."))
+                return await ctx.send(view=ErrorMessageView(t(ctx, "bl_you_are_blacklisted", cross=cross_emoji)))
             else:
-                return await ctx.send(view=StatusMessageView(f"### {tick_emoji} Вы **не находитесь** в чёрном списке этого сервера."))
+                return await ctx.send(view=StatusMessageView(t(ctx, "bl_you_not_blacklisted", tick=tick_emoji)))
 
     if act in ("add", "a"):
         if not is_admin:
-            return await ctx.send(view=ErrorMessageView(f"### {cross_emoji} У вас нет прав для управления чёрным списком."))
+            return await ctx.send(view=ErrorMessageView(t(ctx, "bl_no_perms", cross=cross_emoji)))
         if not user:
-            return await ctx.send(view=ErrorMessageView(f"### {cross_emoji} Укажите пользователя: `!bl add @пользователь`"))
+            return await ctx.send(view=ErrorMessageView(t(ctx, "bl_specify_user_add", cross=cross_emoji)))
         if user.id == bot.user.id:
-            return await ctx.send(view=ErrorMessageView(f"### {cross_emoji} Нельзя добавить бота в чёрный список."))
+            return await ctx.send(view=ErrorMessageView(t(ctx, "bl_cannot_add_bot", cross=cross_emoji)))
         if user.id == ctx.guild.owner_id:
-            return await ctx.send(view=ErrorMessageView(f"### {cross_emoji} Нельзя добавить создателя сервера в чёрный список."))
+            return await ctx.send(view=ErrorMessageView(t(ctx, "bl_cannot_add_owner", cross=cross_emoji)))
         if db_blacklist.is_blacklisted(ctx.guild.id, user.id):
-            return await ctx.send(view=ErrorMessageView(f"### {cross_emoji} Пользователь {user.mention} уже находится в чёрном списке."))
+            return await ctx.send(view=ErrorMessageView(t(ctx, "bl_already_listed", cross=cross_emoji, user=user.mention)))
 
         db_blacklist.add(ctx.guild.id, user.id, added_by=ctx.author.id)
-        return await ctx.send(view=StatusMessageView(f"### {tick_emoji} Пользователь {user.mention} успешно добавлен в чёрный список."))
+        return await ctx.send(view=StatusMessageView(t(ctx, "bl_user_added", tick=tick_emoji, user=user.mention)))
 
     if act in ("remove", "r"):
         if not is_admin:
-            return await ctx.send(view=ErrorMessageView(f"### {cross_emoji} У вас нет прав для управления чёрным списком."))
+            return await ctx.send(view=ErrorMessageView(t(ctx, "bl_no_perms", cross=cross_emoji)))
         if not user:
-            return await ctx.send(view=ErrorMessageView(f"### {cross_emoji} Укажите пользователя: `!bl remove @пользователь`"))
+            return await ctx.send(view=ErrorMessageView(t(ctx, "bl_specify_user_remove", cross=cross_emoji)))
         if not db_blacklist.is_blacklisted(ctx.guild.id, user.id):
-            return await ctx.send(view=ErrorMessageView(f"### {cross_emoji} Пользователя {user.mention} нет в чёрном списке."))
+            return await ctx.send(view=ErrorMessageView(t(ctx, "bl_not_listed", cross=cross_emoji, user=user.mention)))
 
         db_blacklist.remove(ctx.guild.id, user.id)
-        return await ctx.send(view=StatusMessageView(f"### {tick_emoji} Пользователь {user.mention} успешно удален из чёрного списка."))
+        return await ctx.send(view=StatusMessageView(t(ctx, "bl_user_removed", tick=tick_emoji, user=user.mention)))
+
+@bot.tree.command(name="ping", description="Проверить задержку и статус работы бота")
+async def ping_slash_command(interaction: discord.Interaction):
+    start = time.time()
+    await interaction.response.send_message(view=StatusMessageView(t(interaction, "ping_measuring")))
+    delay = round((time.time() - start) * 1000)
+    ws_delay = round(bot.latency * 1000) if bot.latency and bot.latency != float('inf') else 0
+
+    emoji = "🟢" if delay <= 200 else "🟡" if delay <= 400 else "🟠" if delay <= 600 else "🔴"
+    status_str = t(interaction, "ping_status_almost" if emoji == "🔴" else "ping_status_normal")
+
+    text = t(interaction, "ping_response", delay=delay, emoji=emoji, ws_delay=ws_delay, status=status_str)
+    await interaction.edit_original_response(view=StatusMessageView(text))
+
+@bot.command(name="ping")
+async def ping_prefix_command(ctx: commands.Context):
+    start = time.time()
+    msg = await ctx.send(view=StatusMessageView(t(ctx, "ping_measuring")))
+    delay = round((time.time() - start) * 1000)
+    ws_delay = round(bot.latency * 1000) if bot.latency and bot.latency != float('inf') else 0
+
+    emoji = "🟢" if delay <= 200 else "🟡" if delay <= 400 else "🟠" if delay <= 600 else "🔴"
+    status_str = t(ctx, "ping_status_almost" if emoji == "🔴" else "ping_status_normal")
+
+    text = t(ctx, "ping_response", delay=delay, emoji=emoji, ws_delay=ws_delay, status=status_str)
+    await msg.edit(view=StatusMessageView(text))
+
+@bot.tree.command(name="config", description="Настройки бота / Bot settings")
+@app_commands.describe(language="Выберите язык бота (english / russian)")
+@app_commands.choices(language=[
+    app_commands.Choice(name="English (eng) 🇬🇧", value="en"),
+    app_commands.Choice(name="Русский (ru) 🇷🇺", value="ru"),
+])
+async def config_slash_command(interaction: discord.Interaction, language: str | None = None):
+    if not interaction.guild:
+        await interaction.response.send_message(t(interaction, "server_only_command"), ephemeral=True)
+        return
+
+    cross_emoji = EMOJIS.get('cross', '')
+    tick_emoji = EMOJIS.get('tick', '')
+
+    if language is None:
+        view = StatusMessageView(t(interaction, "config_title"))
+        await interaction.response.send_message(view=view, ephemeral=True)
+        return
+
+    if not is_admin_or_manager(interaction.user):
+        view = ErrorMessageView(t(interaction, "config_no_perms", cross=cross_emoji))
+        await interaction.response.send_message(view=view, ephemeral=True)
+        return
+
+    lang_clean = language.strip().lower()
+    if lang_clean in ("english", "eng", "en"):
+        norm_lang = "en"
+    elif lang_clean in ("russian", "ru"):
+        norm_lang = "ru"
+    else:
+        view = ErrorMessageView(t(interaction, "config_invalid_lang", cross=cross_emoji))
+        await interaction.response.send_message(view=view, ephemeral=True)
+        return
+
+    db_settings.set_language(interaction.guild_id, norm_lang)
+    view = StatusMessageView(t(interaction, "config_lang_set", tick=tick_emoji))
+    await interaction.response.send_message(view=view, ephemeral=True)
+
+@bot.command(name="config")
+async def config_prefix_command(ctx: commands.Context, key: str | None = None, value: str | None = None):
+    if not ctx.guild:
+        return
+
+    cross_emoji = EMOJIS.get('cross', '')
+    tick_emoji = EMOJIS.get('tick', '')
+
+    if not key or key.lower() in ("info", "list", "show"):
+        return await ctx.send(view=StatusMessageView(t(ctx, "config_title")))
+
+    target_lang = None
+    if key.lower() in ("language", "lang", "язык"):
+        target_lang = value
+    elif key.lower() in ("english", "eng", "en", "russian", "ru"):
+        target_lang = key
+
+    if not target_lang:
+        return await ctx.send(view=ErrorMessageView(t(ctx, "config_invalid_lang", cross=cross_emoji)))
+
+    if not is_admin_or_manager(ctx.author):
+        return await ctx.send(view=ErrorMessageView(t(ctx, "config_no_perms", cross=cross_emoji)))
+
+    lang_clean = target_lang.strip().lower()
+    if lang_clean in ("english", "eng", "en"):
+        norm_lang = "en"
+    elif lang_clean in ("russian", "ru"):
+        norm_lang = "ru"
+    else:
+        return await ctx.send(view=ErrorMessageView(t(ctx, "config_invalid_lang", cross=cross_emoji)))
+
+    db_settings.set_language(ctx.guild.id, norm_lang)
+    await ctx.send(view=StatusMessageView(t(ctx, "config_lang_set", tick=tick_emoji)))
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -2365,6 +2684,14 @@ async def on_ready():
         bot_initialized = True
         await ensure_emojis()
         print(f"Бот {bot.user} запущен и готов к работе!")
+
+        # Проверка и логирование выбранного языка для всех серверов после перезапуска
+        all_configs = db_settings.get_all_configs()
+        print(f"Загружены конфигурации серверов ({len(all_configs)} в БД, по умолчанию: {DEFAULT_LANGUAGE}):")
+        for guild in bot.guilds:
+            lang = db_settings.get_language(guild.id)
+            lang_label = "Русский (ru) 🇷🇺" if lang == "ru" else "English (en) 🇬🇧"
+            print(f"  • Сервер '{guild.name}' (ID: {guild.id}) -> Язык: {lang_label}")
 
         async def sync_commands():
             try:
