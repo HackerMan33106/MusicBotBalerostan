@@ -109,6 +109,11 @@ YTDL_OPTIONS = {
     'default_search': 'ytsearch',
     'source_address': '0.0.0.0',
     'remote_components': ['ejs:github'],
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'ios', 'web'],
+        }
+    }
 }
 
 YTDL_SEARCH_OPTIONS = {
@@ -120,6 +125,11 @@ YTDL_SEARCH_OPTIONS = {
     'source_address': '0.0.0.0',
     'socket_timeout': 10,
     'remote_components': ['ejs:github'],
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'ios', 'web'],
+        }
+    }
 }
 
 active_cookie_file = get_safe_cookies_path()
