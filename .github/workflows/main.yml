@@ -31,45 +31,25 @@ jobs:
           command_timeout: 30m
           envs: DISCORD_TOKEN,SPOTIFY_CLIENT_ID,SPOTIFY_CLIENT_SECRET,COMMAND_PREFIX,MAX_DURATION,EMBED_COLOR,INACTIVITY_TIMEOUT,EMPTY_QUEUE_TIMEOUT
           script: |
-            echo ">>> 📥 Updating code..."
+            echo ">>> 📥 Navigating to app directory..."
             cd ~/app || exit 1
 
-            # Останавливаем контейнеры и сохраняем data/
-            if [ -d "MusicBot" ]; then
-              echo ">>> 🛑 Stopping containers..."
-              cd MusicBot
-              docker compose down || true
-              cd ~/app
-
-              echo ">>> 💾 Backing up data and cookies..."
-              if [ -d "MusicBot/data" ]; then
-                mv MusicBot/data ~/app/musicbot_data_backup
-              fi
-              if [ -f "MusicBot/cookies.txt" ]; then
-                cp MusicBot/cookies.txt ~/app/musicbot_cookies_backup
-              elif [ -f "MusicBot/data/cookies.txt" ]; then
-                cp MusicBot/data/cookies.txt ~/app/musicbot_cookies_backup
-              fi
-
-              echo ">>> 🗑️ Removing old directory..."
-              sudo rm -rf MusicBot
-            fi
-
-            echo ">>> 🔄 Cloning repository..."
-            git clone git@github.com:HackerMan33106/MusicBotBalerostan.git MusicBot
-            cd MusicBot || exit 1
-
-            echo ">>> 📦 Restoring data directory & cookies..."
-            if [ -d ~/app/musicbot_data_backup ]; then
-              mv ~/app/musicbot_data_backup ./data
+            if [ ! -d "MusicBot/.git" ]; then
+              echo ">>> 🔄 Cloning repository..."
+              git clone git@github.com:HackerMan33106/MusicBotBalerostan.git MusicBot
+              cd MusicBot || exit 1
             else
-              mkdir -p ./data
+              echo ">>> 🔄 Updating existing repository..."
+              cd MusicBot || exit 1
+              git fetch origin main
+              git reset --hard origin/main
             fi
 
-            if [ -f ~/app/musicbot_cookies_backup ]; then
-              cp ~/app/musicbot_cookies_backup ./cookies.txt
-              cp ~/app/musicbot_cookies_backup ./data/cookies.txt
-            elif [ -f ./data/cookies.txt ]; then
+            echo ">>> 📦 Ensuring data directory and cookies..."
+            mkdir -p ./data
+            if [ -f ./cookies.txt ] && [ ! -f ./data/cookies.txt ]; then
+              cp ./cookies.txt ./data/cookies.txt
+            elif [ -f ./data/cookies.txt ] && [ ! -f ./cookies.txt ]; then
               cp ./data/cookies.txt ./cookies.txt
             fi
 
@@ -86,7 +66,7 @@ jobs:
             DATA_DIR=/app/data
             EOF
 
-            echo ">>> 🔨 Building new Docker images..."
+            echo ">>> 🔨 Building new Docker image..."
             docker compose build
 
             echo ">>> 🚀 Starting containers..."
@@ -98,4 +78,3 @@ jobs:
             echo ">>> ✅ Deployment complete!"
             echo ">>> 📊 Container status:"
             docker compose ps
-
