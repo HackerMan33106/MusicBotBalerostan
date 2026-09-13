@@ -25,7 +25,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
+COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "/")
 MAX_DURATION = int(os.getenv("MAX_DURATION", "900"))  # В секундах (по умолчанию 15 минут)
 INACTIVITY_TIMEOUT = int(os.getenv("INACTIVITY_TIMEOUT", "10"))  # Секунд до выхода при пустом ГС
 EMPTY_QUEUE_TIMEOUT = int(os.getenv("EMPTY_QUEUE_TIMEOUT", "20"))  # Секунд до выхода при пустой очереди
@@ -334,18 +334,80 @@ def parse_entry_duration(entry: dict) -> int:
 def parse_entry_artist(entry: dict) -> str:
     if not entry or not isinstance(entry, dict):
         return 'Unknown artist'
-    for k in ('uploader', 'channel', 'artist', 'creator', 'uploader_id'):
+
+    # 1. Прямые музыкальные метаданные исполнителя
+    for k in ('artist', 'album_artist', 'creator'):
         val = entry.get(k)
         if val and isinstance(val, str):
             s = val.strip()
             if s and s.lower() not in ('unknown', 'unknown artist', 'none'):
                 return s
+
+    # 2. Если канал формата "Artist - Topic", извлекаем чистого исполнителя
+    for k in ('channel', 'uploader'):
+        val = entry.get(k)
+        if val and isinstance(val, str):
+            s = val.strip()
+            if s.lower().endswith(' - topic'):
+                return s[:-8].strip()
+            if s.lower().endswith(' topic'):
+                return s[:-6].strip()
+
+    # 3. Если в названии видео есть "Artist - Title"
     title = entry.get('title') or ''
     if ' - ' in title:
         cand = title.split(' - ')[0].strip()
         if cand and len(cand) < 50 and cand.lower() not in ('unknown', 'various artists'):
             return cand
+
+    # 4. Канал / uploader (с очисткой от суффиксов VEVO / Official)
+    for k in ('channel', 'uploader', 'uploader_id'):
+        val = entry.get(k)
+        if val and isinstance(val, str):
+            s = val.strip()
+            if s and s.lower() not in ('unknown', 'unknown artist', 'none'):
+                for sfx in (' Official Channel', ' Official', ' Records', ' Music'):
+                    if s.endswith(sfx):
+                        s = s[:-len(sfx)].strip()
+                if s.endswith('VEVO'):
+                    s = s[:-4].strip()
+                return s if s else val.strip()
+
     return 'Unknown artist'
+
+def extract_clean_track_info(entry: dict, fallback_entry: dict | None = None, default_title: str = '') -> tuple[str, str]:
+    """Извлекает очищенное название трека и исполнителя из метаданных видео/аудио"""
+    if not entry:
+        entry = fallback_entry or {}
+
+    artist = parse_entry_artist(entry)
+    if (artist == 'Unknown artist' or not artist) and fallback_entry:
+        artist = parse_entry_artist(fallback_entry)
+
+    # В YouTube Music трек может лежать в 'track'
+    raw_title = entry.get('track') or entry.get('alt_title') or entry.get('title')
+    if not raw_title and fallback_entry:
+        raw_title = fallback_entry.get('track') or fallback_entry.get('alt_title') or fallback_entry.get('title')
+    if not raw_title:
+        raw_title = default_title or 'Unknown title'
+
+    clean_title = raw_title.strip()
+
+    # Если в названии есть "Artist - Title", разделяем
+    if ' - ' in clean_title:
+        parts = clean_title.split(' - ', 1)
+        left = parts[0].strip()
+        right = parts[1].strip()
+        if artist in ('Unknown artist', '') or artist.lower() in left.lower() or left.lower() in artist.lower():
+            if artist in ('Unknown artist', '') and len(left) < 50:
+                artist = left
+            if right:
+                clean_title = right
+
+    # Очистка мусора из названия: [Official Video], (Official Audio), [MV], (Lyrics), [HD] и т.п. в конце
+    clean_title = re.sub(r'(?i)\s*[\(\[](?:official\s*(?:music\s*)?(?:video|audio|mv|visualizer)?|mv|lyrics|full\s*ver(?:sion)?|hd|hq)[\)\]]', '', clean_title).strip()
+
+    return clean_title if clean_title else raw_title, artist if artist else 'Unknown artist'
 
 def extract_first_entry(data: dict | None) -> dict:
     if not data or not isinstance(data, dict):
@@ -371,6 +433,33 @@ def format_time(seconds: int | float) -> str:
     mins = seconds // 60
     secs = seconds % 60
     return f"{mins:02d}:{secs:02d}"
+
+def format_track_link(title: str, artist: str, url: str, artist_url: str | None = None) -> str:
+    clean_title = (title or 'Unknown title').strip()
+    clean_artist = (artist or 'Unknown artist').strip()
+    a_url = artist_url if (artist_url and artist_url.startswith(('http://', 'https://'))) else url
+
+    if url and url.startswith(('http://', 'https://')):
+        if a_url and a_url.startswith(('http://', 'https://')):
+            return f"[{clean_title}]({url}) by [{clean_artist}]({a_url})"
+        return f"[{clean_title}]({url}) by [{clean_artist}]({url})"
+    return f"**{clean_title}** by **{clean_artist}**"
+
+def make_thumbnail_accessory(url: str | None):
+    if not url or not hasattr(discord.ui, 'Thumbnail'):
+        return None
+    url = str(url).strip()
+    if not url.startswith(('http://', 'https://')):
+        return None
+    try:
+        return discord.ui.Thumbnail(media=url)
+    except TypeError:
+        try:
+            return discord.ui.Thumbnail(url=url)
+        except Exception:
+            return None
+    except Exception:
+        return None
 
 def probe_stream_metadata(url: str) -> dict:
     """Извлекает duration, title, artist из аудиопотока/файла через ffprobe или ffmpeg"""
@@ -629,13 +718,15 @@ def is_admin_or_manager(member: discord.Member | discord.User | None) -> bool:
     return perms.administrator or perms.manage_guild
 
 class Track:
-    def __init__(self, title, artist, duration, url, stream_url, requester):
+    def __init__(self, title, artist, duration, url, stream_url, requester, thumbnail: str | None = None, artist_url: str | None = None):
         self.title = title
         self.artist = artist
         self.duration = duration
         self.url = url
         self.stream_url = stream_url
         self.requester = requester
+        self.thumbnail = thumbnail
+        self.artist_url = artist_url
         self.start_time = None
 
 class StatusMessageView(discord.ui.LayoutView):
@@ -659,10 +750,19 @@ class QueuedMessageView(discord.ui.LayoutView):
     def __init__(self, track_obj: Track, pos: int):
         super().__init__(timeout=None)
         container = discord.ui.Container(accent_color=EMBED_COLOR)
-        container.add_item(discord.ui.TextDisplay(
+
+        track_text = (
             f"### Queued at position #{pos}\n"
-            f"[{track_obj.title}]({track_obj.url}) by [{track_obj.artist}]({track_obj.url}) [{format_time(track_obj.duration)}]"
-        ))
+            f"{format_track_link(track_obj.title, track_obj.artist, track_obj.url, track_obj.artist_url)} [{format_time(track_obj.duration)}]"
+        )
+
+        thumb_accessory = make_thumbnail_accessory(track_obj.thumbnail)
+        if thumb_accessory and hasattr(discord.ui, 'Section'):
+            section = discord.ui.Section(discord.ui.TextDisplay(track_text), accessory=thumb_accessory)
+            container.add_item(section)
+        else:
+            container.add_item(discord.ui.TextDisplay(track_text))
+
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(
             "-# Not the correct track? Try being more specific or use `/search`"
@@ -689,11 +789,18 @@ class PlayerControlView(discord.ui.LayoutView):
         container = discord.ui.Container(accent_color=EMBED_COLOR)
 
         # 1. Заголовок и информация о треке
+        play_emoji = EMOJIS.get('play', '▶')
         track_info = (
-            f"### ▶ Now Playing\n"
-            f"[{curr.title}]({curr.url}) by [{curr.artist}]({curr.url}) [{format_time(curr.duration)}]"
+            f"### {play_emoji} Now Playing\n"
+            f"{format_track_link(curr.title, curr.artist, curr.url, curr.artist_url)} [{format_time(curr.duration)}]"
         )
-        container.add_item(discord.ui.TextDisplay(track_info))
+
+        thumb_accessory = make_thumbnail_accessory(curr.thumbnail)
+        if thumb_accessory and hasattr(discord.ui, 'Section'):
+            section = discord.ui.Section(discord.ui.TextDisplay(track_info), accessory=thumb_accessory)
+            container.add_item(section)
+        else:
+            container.add_item(discord.ui.TextDisplay(track_info))
 
         # 2. Первый разделитель
         container.add_item(discord.ui.Separator())
@@ -830,7 +937,7 @@ class PlayerControlView(discord.ui.LayoutView):
 
         desc = (
             f"### ▶ Now Playing\n"
-            f"[{curr.title}]({curr.url}) by [{curr.artist}]({curr.url}) [{format_time(left)} осталось]\n\n"
+            f"{format_track_link(curr.title, curr.artist, curr.url)} [{format_time(left)} осталось]\n\n"
         )
 
         queue_icon = EMOJIS['queue']
@@ -838,7 +945,7 @@ class PlayerControlView(discord.ui.LayoutView):
             desc += f"### {queue_icon} Up Next\n"
             total_sec = sum(t.duration for t in self.player.queue)
             for i, tr in enumerate(self.player.queue[:10], start=1):
-                desc += f"**{i}.** [{tr.title}]({tr.url}) by [{tr.artist}]({tr.url}) [{format_time(tr.duration)}]\n"
+                desc += f"**{i}.** {format_track_link(tr.title, tr.artist, tr.url)} [{format_time(tr.duration)}]\n"
             desc += f"\n-# Page 1/1 • Tracks in queue: {len(self.player.queue)} • Length: {format_time(total_sec)}"
         else:
             desc += "-# Очередь пуста."
@@ -1117,7 +1224,24 @@ def get_player(guild: discord.Guild) -> MusicPlayer:
         players[guild.id] = MusicPlayer(bot, guild)
     return players[guild.id]
 
-async def find_best_youtube_stream(query: str, target_artist: str = '', target_title: str = '', target_duration: int = 0) -> tuple[str, int]:
+class StreamResult:
+    __slots__ = ('stream_url', 'duration', 'webpage_url', 'title', 'artist', 'thumbnail')
+
+    def __init__(self, stream_url: str, duration: int, webpage_url: str = '', title: str = '', artist: str = '', thumbnail: str | None = None):
+        self.stream_url = stream_url
+        self.duration = duration
+        self.webpage_url = webpage_url
+        self.title = title
+        self.artist = artist
+        self.thumbnail = thumbnail
+
+    def __iter__(self):
+        return iter((self.stream_url, self.duration))
+
+    def __getitem__(self, idx):
+        return (self.stream_url, self.duration, self.webpage_url, self.title, self.artist, self.thumbnail)[idx]
+
+async def find_best_youtube_stream(query: str, target_artist: str = '', target_title: str = '', target_duration: int = 0) -> StreamResult:
     """Ищет наилучший студийный аудиопоток с умной фильтрацией (отсеивая Live, концерты и каверы) с максимальной скоростью"""
     loop = asyncio.get_running_loop()
     clean_artist = target_artist.strip()
@@ -1137,7 +1261,7 @@ async def find_best_youtube_stream(query: str, target_artist: str = '', target_t
                 score = 0
                 title_lower = (e.get('title') or '').lower()
                 uploader_lower = (e.get('uploader') or e.get('channel') or parse_entry_artist(e)).lower()
-                orig_title_lower = clean_title.lower()
+                orig_title_lower = clean_title.lower() if clean_title else query.lower()
 
                 # Официальный канал лейбла / исполнителя (- Topic или Official/Vevo)
                 if '- topic' in uploader_lower:
@@ -1184,7 +1308,17 @@ async def find_best_youtube_stream(query: str, target_artist: str = '', target_t
                         stream_url = audio_fmts[-1]['url']
                 if stream_url and stream_url.startswith(('http://', 'https://')):
                     dur = track_data.get('duration') or best_entry.get('duration') or target_duration
-                    return stream_url, dur
+                    web_url = track_data.get('webpage_url') or (f"https://www.youtube.com/watch?v={best_id}" if best_id else best_url)
+                    t_title, t_artist = extract_clean_track_info(track_data, fallback_entry=best_entry, default_title=query)
+                    t_thumb = track_data.get('thumbnail') or best_entry.get('thumbnail')
+                    return StreamResult(
+                        stream_url=stream_url,
+                        duration=dur,
+                        webpage_url=web_url,
+                        title=t_title,
+                        artist=t_artist,
+                        thumbnail=t_thumb
+                    )
     except Exception as e:
         print(f"Ошибка умного поиска YouTube: {e}")
 
@@ -1198,7 +1332,19 @@ async def find_best_youtube_stream(query: str, target_artist: str = '', target_t
             if audio_fmts:
                 stream_url = audio_fmts[-1]['url']
         if stream_url and stream_url.startswith(('http://', 'https://')):
-            return stream_url, data.get('duration') or target_duration
+            dur = data.get('duration') or target_duration
+            vid_id = data.get('id')
+            web_url = data.get('webpage_url') or (f"https://www.youtube.com/watch?v={vid_id}" if vid_id else (query if query.startswith(('http://', 'https://')) else ''))
+            t_title, t_artist = extract_clean_track_info(data, default_title=query)
+            t_thumb = data.get('thumbnail')
+            return StreamResult(
+                stream_url=stream_url,
+                duration=dur,
+                webpage_url=web_url,
+                title=t_title,
+                artist=t_artist,
+                thumbnail=t_thumb
+            )
     except Exception as e2:
         print(f"Ошибка fallback поиска YouTube: {e2}")
 
@@ -1225,12 +1371,20 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
     player.cancel_empty_queue_timer()
     player.cancel_inactivity_timer()
 
-    search_query = link
-    orig_url = link
+    clean_link = link.strip()
+    if clean_link.lower().startswith("link:"):
+        clean_link = clean_link[5:].strip()
+
+    search_query = clean_link
+    orig_url = clean_link
     orig_title = None
     orig_artist = None
+    artist_url = None
+    thumbnail = None
+    duration = 0
+    stream_url = None
 
-    match = re.search(r"spotify\.com/track/([a-zA-Z0-9]+)", link)
+    match = re.search(r"spotify\.com/track/([a-zA-Z0-9]+)", clean_link)
     if match:
         if not sp:
             await send_error(ErrorMessageView(f"### {cross_emoji} Spotify API не настроен! Укажите SPOTIFY_CLIENT_ID и SPOTIFY_CLIENT_SECRET в файле .env"))
@@ -1240,29 +1394,84 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
         try:
             sp_track = sp.track(sp_id)
             orig_artist = sp_track['artists'][0]['name'] if sp_track.get('artists') else 'Unknown artist'
+            artist_url = sp_track['artists'][0]['external_urls'].get('spotify') if sp_track.get('artists') else None
             orig_title = sp_track.get('name', 'Unknown title')
             orig_duration = int(sp_track.get('duration_ms', 0) / 1000)
             orig_url = f"https://open.spotify.com/track/{sp_id}"
+            images = sp_track.get('album', {}).get('images', [])
+            thumbnail = images[0].get('url') if images else None
         except Exception as e:
             await send_error(ErrorMessageView(f"### {cross_emoji} Ошибка Spotify API: {e}"))
             return
 
         try:
-            stream_url, duration = await find_best_youtube_stream(
+            stream_res = await find_best_youtube_stream(
                 query=f"{orig_artist} - {orig_title}",
                 target_artist=orig_artist,
                 target_title=orig_title,
                 target_duration=orig_duration
             )
+            stream_url = stream_res.stream_url
+            duration = stream_res.duration or orig_duration
             extracted_title = orig_title
             extracted_artist = orig_artist
+            if not thumbnail:
+                thumbnail = stream_res.thumbnail
         except Exception as e:
             await send_error(ErrorMessageView(f"### {cross_emoji} Не удалось найти аудиопоток: {e}"))
             return
+    elif not clean_link.startswith(('http://', 'https://')):
+        # Поисковый текстовый запрос (например, "Go Go Maniac", "RATATATA")
+        # Сначала пробуем найти трек через Spotify (как в оригинальном боте)
+        loop = asyncio.get_running_loop()
+        found_spotify = False
+        if sp:
+            try:
+                sp_data = await loop.run_in_executor(None, lambda: sp.search(q=clean_link, type='track', limit=1))
+                items = sp_data.get('tracks', {}).get('items', []) if sp_data else []
+                if items:
+                    sp_track = items[0]
+                    orig_artist = sp_track['artists'][0]['name'] if sp_track.get('artists') else 'Unknown artist'
+                    artist_url = sp_track['artists'][0]['external_urls'].get('spotify') if sp_track.get('artists') else None
+                    orig_title = sp_track.get('name', 'Unknown title')
+                    orig_duration = int(sp_track.get('duration_ms', 0) / 1000)
+                    orig_url = sp_track.get('external_urls', {}).get('spotify') or f"https://open.spotify.com/track/{sp_track.get('id')}"
+                    images = sp_track.get('album', {}).get('images', [])
+                    thumbnail = images[0].get('url') if images else None
+
+                    stream_res = await find_best_youtube_stream(
+                        query=f"{orig_artist} - {orig_title}",
+                        target_artist=orig_artist,
+                        target_title=orig_title,
+                        target_duration=orig_duration
+                    )
+                    stream_url = stream_res.stream_url
+                    duration = stream_res.duration or orig_duration
+                    extracted_title = orig_title
+                    extracted_artist = orig_artist
+                    if not thumbnail:
+                        thumbnail = stream_res.thumbnail
+                    found_spotify = True
+            except Exception as sp_err:
+                print(f"Поиск в Spotify не удался, переходим на YouTube: {sp_err}")
+
+        if not found_spotify:
+            try:
+                stream_res = await find_best_youtube_stream(query=clean_link)
+                stream_url = stream_res.stream_url
+                duration = stream_res.duration
+                orig_url = stream_res.webpage_url or f"https://www.youtube.com/results?search_query={urllib.parse.quote(clean_link)}"
+                extracted_title = stream_res.title or clean_link
+                extracted_artist = stream_res.artist or 'Unknown artist'
+                thumbnail = stream_res.thumbnail
+                artist_url = None
+            except Exception as e:
+                await send_error(ErrorMessageView(f"### {cross_emoji} Не удалось найти трек: {e}"))
+                return
     else:
         loop = asyncio.get_running_loop()
         try:
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_query, download=False))
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(clean_link, download=False))
             data = extract_first_entry(data)
 
             duration = data.get('duration') or 0
@@ -1271,7 +1480,12 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
                 audio_fmts = [f for f in data['formats'] if f.get('url') and (f.get('acodec') != 'none' or f.get('vcodec') == 'none')]
                 if audio_fmts:
                     stream_url = audio_fmts[-1]['url']
-            stream_url = stream_url or link
+            stream_url = stream_url or clean_link
+
+            # Гарантируем, что orig_url - это веб-ссылка
+            orig_url = data.get('webpage_url') or data.get('url') or clean_link
+            thumbnail = data.get('thumbnail')
+            artist_url = None
 
             # Если длительность не определена (например, прямая ссылка на MP3/аудио), зондируем через ffprobe/ffmpeg
             probe_res = {}
@@ -1284,16 +1498,18 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
                 if not orig_artist and probe_res.get('artist'):
                     orig_artist = probe_res['artist']
 
-            # Если название всё ещё не определено красиво (или равно ссылке / Unknown), берём имя файла из URL
-            extracted_title = orig_title or data.get('title')
-            if not extracted_title or extracted_title in ('Unknown title', 'watch', link):
-                path = urllib.parse.urlparse(link).path
+            t_title, t_artist = extract_clean_track_info(data, default_title=orig_title or '')
+            extracted_title = orig_title or t_title
+            if not extracted_title or extracted_title in ('Unknown title', 'watch', clean_link):
+                path = urllib.parse.urlparse(clean_link).path
                 fname = os.path.basename(path)
                 if fname:
                     clean_fname = urllib.parse.unquote(fname)
                     extracted_title = os.path.splitext(clean_fname)[0]
+                else:
+                    extracted_title = 'Unknown title'
 
-            extracted_artist = orig_artist or data.get('uploader')
+            extracted_artist = orig_artist or t_artist
             if not extracted_artist or extracted_artist == 'Unknown artist':
                 if probe_res.get('artist'):
                     extracted_artist = probe_res['artist']
@@ -1314,7 +1530,9 @@ async def play_track_logic(requester: discord.Member, guild: discord.Guild, text
         duration=duration,
         url=orig_url,
         stream_url=stream_url,
-        requester=requester
+        requester=requester,
+        thumbnail=thumbnail,
+        artist_url=artist_url
     )
 
     is_playing = player.voice_client.is_playing() or player.voice_client.is_paused()
@@ -1385,14 +1603,19 @@ async def search_tracks(query: str, platform: str = "youtube") -> list:
             items = data.get('tracks', {}).get('items', []) if data else []
             for item in items:
                 artist = item['artists'][0]['name'] if item.get('artists') else 'Unknown artist'
+                artist_url = item['artists'][0]['external_urls'].get('spotify') if item.get('artists') else None
                 title = item.get('name', 'Unknown title')
                 duration = int(item.get('duration_ms', 0) / 1000)
                 url = item.get('external_urls', {}).get('spotify') or f"https://open.spotify.com/track/{item.get('id')}"
+                images = item.get('album', {}).get('images', [])
+                thumbnail = images[0].get('url') if images else None
                 results.append({
                     'title': title,
                     'artist': artist,
+                    'artist_url': artist_url,
                     'duration': duration,
                     'url': url,
+                    'thumbnail': thumbnail,
                     'stream_url': None
                 })
         except Exception as e:
@@ -1455,18 +1678,20 @@ async def search_tracks(query: str, platform: str = "youtube") -> list:
             scored_entries.sort(key=lambda x: x[0], reverse=True)
 
             def make_track_dict(e):
-                t = e.get('title') or 'Unknown title'
-                a = parse_entry_artist(e)
+                t, a = extract_clean_track_info(e)
                 d = parse_entry_duration(e)
                 vid_id = e.get('id')
                 u = e.get('webpage_url') or e.get('url')
                 if not u and vid_id:
                     u = f"https://www.youtube.com/watch?v={vid_id}"
+                thumb = e.get('thumbnail')
                 return {
                     'title': t,
                     'artist': a,
+                    'artist_url': None,
                     'duration': d,
                     'url': u or '',
+                    'thumbnail': thumb,
                     'stream_url': None
                 }
 
@@ -1498,15 +1723,16 @@ async def search_tracks(query: str, platform: str = "youtube") -> list:
         for entry in entries:
             if not entry:
                 continue
-            title = entry.get('title') or 'Unknown title'
-            artist = parse_entry_artist(entry)
+            title, artist = extract_clean_track_info(entry)
             duration = parse_entry_duration(entry)
             url = entry.get('webpage_url') or entry.get('url') or entry.get('permalink_url') or ''
             results.append({
                 'title': title,
                 'artist': artist,
+                'artist_url': None,
                 'duration': duration,
                 'url': url,
+                'thumbnail': entry.get('thumbnail'),
                 'stream_url': None
             })
     except Exception as e:
@@ -1783,7 +2009,9 @@ class SearchView(discord.ui.LayoutView):
                 duration=duration,
                 url=track_url,
                 stream_url=stream_url,
-                requester=interaction.user
+                requester=interaction.user,
+                thumbnail=selected.get('thumbnail'),
+                artist_url=selected.get('artist_url')
             )
         except Exception as e:
             traceback.print_exc()
