@@ -106,30 +106,22 @@ YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
     'quiet': True,
+    'no_warnings': True,
     'default_search': 'ytsearch',
     'source_address': '0.0.0.0',
     'remote_components': ['ejs:github'],
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['android', 'ios', 'web'],
-        }
-    }
 }
 
 YTDL_SEARCH_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
     'quiet': True,
+    'no_warnings': True,
     'extract_flat': True,
     'skip_download': True,
     'source_address': '0.0.0.0',
     'socket_timeout': 10,
     'remote_components': ['ejs:github'],
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['android', 'ios', 'web'],
-        }
-    }
 }
 
 active_cookie_file = get_safe_cookies_path()
